@@ -299,11 +299,25 @@ async def find_law_article(law_name: str, article_number: str) -> str:
             matches = []
             
             for pattern in patterns:
-                regex_pattern = f".{{0,100}}{re.escape(pattern)}.{{0,2000}}"
-                found = re.findall(regex_pattern, extracted_text, re.DOTALL)
+                # Smart text extraction with adaptive limits
+                # - 100 chars before pattern for context
+                # - Variable length after pattern based on content structure
+                # - API spec recommends being selective to avoid large response errors
+                base_pattern = f".{{0,100}}{re.escape(pattern)}"
+                
+                # First try: Look for natural boundaries (次条, 附則, etc.)
+                boundary_pattern = f"{base_pattern}.*?(?=第.*?条|附則|別表|$)"
+                found = re.findall(boundary_pattern, extracted_text, re.DOTALL)
+                
+                # Fallback: Use conservative 1500 char limit (API-safe)
+                if not found:
+                    fallback_pattern = f"{base_pattern}.{{0,1500}}"
+                    found = re.findall(fallback_pattern, extracted_text, re.DOTALL)
+                
                 for match in found:
                     clean_match = match.strip()
-                    if clean_match and clean_match not in matches:
+                    # Ensure we capture complete sentences/clauses
+                    if len(clean_match) > 50 and clean_match not in matches:
                         matches.append(clean_match)
             
             # Format result
