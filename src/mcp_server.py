@@ -299,7 +299,7 @@ async def find_law_article(law_name: str, article_number: str) -> str:
             matches = []
             
             for pattern in patterns:
-                regex_pattern = f".{{0,100}}{re.escape(pattern)}.{{0,500}}"
+                regex_pattern = f".{{0,100}}{re.escape(pattern)}.{{0,2000}}"
                 found = re.findall(regex_pattern, extracted_text, re.DOTALL)
                 for match in found:
                     clean_match = match.strip()
