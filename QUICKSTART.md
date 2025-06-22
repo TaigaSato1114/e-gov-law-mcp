@@ -2,7 +2,7 @@
 
 ## 最速セットアップ（15秒で完了）
 
-### uvx一発設定（最も簡単）
+### uvx設定（最も簡単）
 
 Claude Desktopの設定ファイルに以下を追加するだけ：
 
@@ -11,7 +11,7 @@ Claude Desktopの設定ファイルに以下を追加するだけ：
   "mcpServers": {
     "e-gov-law": {
       "command": "uvx",
-      "args": ["e-gov-law-mcp"]
+      "args": ["--from", "git+https://github.com/ryoooo/e-gov-law-mcp.git", "e-gov-law-mcp"]
     }
   }
 }

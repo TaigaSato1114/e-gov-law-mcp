@@ -50,13 +50,13 @@ Claude Desktopの設定ファイルに以下を追加するだけです：
   "mcpServers": {
     "e-gov-law": {
       "command": "uvx",
-      "args": ["e-gov-law-mcp"]
+      "args": ["--from", "git+https://github.com/ryoooo/e-gov-law-mcp.git", "e-gov-law-mcp"]
     }
   }
 }
 ```
 
-uvxが自動的にパッケージをダウンロード・実行します。事前のインストールは不要です。
+uvxがGitHubから自動的にパッケージをダウンロード・実行します。事前のインストールは不要です。
 
 ### 方法2: ローカルインストール
 
