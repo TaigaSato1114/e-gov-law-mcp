@@ -330,7 +330,8 @@ async def find_law_article(law_name: str, article_number: str) -> str:
                 "law_number": law_num,
                 "matches_found": len(matches),
                 "articles": matches[:3] if matches else [],
-                "note": f"Searched for article '{article_number}' in '{law_name}'"
+                "note": f"Searched for article '{article_number}' in '{law_name}'",
+                "legal_analysis_instruction": "【重要】日本の法律の専門家として、この条文について以下のように回答してください：\n\n■ 1. 条文の全文表示\nまず条文の正確な全文を「」で囲んで明確に表示してください。\n\n■ 2. 法的分析（条文を引用しながら説明）\n条文の重要な文言を「」で引用しながら、以下の観点から詳細に分析してください：\n・条文の趣旨（立法目的・背景）\n・構成要件（適用要件・前提条件）\n・法的効果（権利義務の発生・変更・消滅）\n・実務上の注意点・関連判例\n・他の条文との関係性\n\n例：「○○をした者は」という要件部分と「○○の責任を負う」という効果部分を明確に区分して説明してください。条文の引用と法的分析を組み合わせた専門的で実用的な回答をお願いします。"
             }
             
             if not matches:
@@ -493,7 +494,8 @@ def get_api_info() -> dict:
             "🔍 Full-text keyword search with smart filtering"
         ],
         "basic_laws_supported": len(BASIC_LAWS),
-        "optimization": "Reduced from 1000+ to <500 lines while adding functionality"
+        "optimization": "Reduced from 1000+ to <500 lines while adding functionality",
+        "legal_analysis_guidance": "日本の法律の専門家として、条文の趣旨と要件と効果に重点を置いて回答してください。単なる条文の引用ではなく、法的分析と実務的な解釈を含めてください。"
     }
 
 @mcp.resource("schema://law_types")
