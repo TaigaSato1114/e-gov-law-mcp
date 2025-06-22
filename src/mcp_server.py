@@ -283,20 +283,12 @@ async def find_law_article(law_name: str, article_number: str) -> str:
         if not law_num:
             return f"Error: Law '{law_name}' not found"
         
-        # Step 2: Get law text optimally per API spec
-        # Use XML format and elm parameter for efficient retrieval
+        # Step 2: Get law text with XML format
         async with await get_http_client() as client:
-            # First try with main body only (API spec recommends selective retrieval)
+            # Get law data with XML format (elm parameter removed due to API 400 errors)
             response = await client.get(f"/law_data/{law_num}", params={
-                "law_full_text_format": "xml",
-                "elm": "Honbun"  # Main body only per API spec
+                "law_full_text_format": "xml"
             })
-            
-            # Fallback to full document if Honbun parameter fails
-            if response.status_code != 200:
-                response = await client.get(f"/law_data/{law_num}", params={
-                    "law_full_text_format": "xml"
-                })
             
             response.raise_for_status()
             
@@ -310,50 +302,118 @@ async def find_law_article(law_name: str, article_number: str) -> str:
             
             for pattern in patterns:
                 # Enhanced text extraction for complete articles
-                base_pattern = f".{{0,100}}{re.escape(pattern)}"
+                article_pattern = re.escape(pattern)
                 
-                # Try multiple extraction strategies in order of preference
-                extraction_strategies = [
-                    # Strategy 1: Natural boundaries (next article, appendix, etc.)
-                    f"{base_pattern}.*?(?=第\\d+条|第[一二三四五六七八九十百千]+条|附則|別表|別記|$)",
-                    
-                    # Strategy 2: Complete paragraphs and items (wider boundaries)
-                    f"{base_pattern}.*?(?=^\\s*第\\d+条|^\\s*第[一二三四五六七八九十百千]+条|^\\s*附則|^\\s*別表|$)",
-                    
-                    # Strategy 3: Generous character limit for complex articles
-                    f"{base_pattern}.{{0,3000}}",
-                    
-                    # Strategy 4: Maximum fallback
-                    f"{base_pattern}.{{0,5000}}"
-                ]
+                # Find all matches first and filter for actual content vs table of contents
+                all_matches = []
                 
-                found_match = None
-                for strategy in extraction_strategies:
-                    found = re.findall(strategy, extracted_text, re.DOTALL | re.MULTILINE)
-                    if found:
-                        found_match = found[0]
-                        break
+                # Find all occurrences of the pattern
+                for match in re.finditer(article_pattern, extracted_text):
+                    pos = match.start()
+                    
+                    # Check if this is the START of an actual article (not a reference)
+                    # Look at context before the match
+                    context_before = extracted_text[max(0, pos-50):pos]
+                    context_after = extracted_text[pos:pos+100]
+                    
+                    # Skip if this appears to be a reference within another article
+                    if re.search(r'第\d+条.*第\d+条', context_before + context_after):
+                        continue  # This is likely a reference, not the actual article start
+                    
+                    # Look for patterns that indicate this is an actual article start
+                    is_actual_article = False
+                    
+                    # Pattern 1: Article number followed by title/content structure
+                    if re.search(rf'{article_pattern}\s*\n\s*\n\s*\n\s*', extracted_text[pos:pos+200]):
+                        is_actual_article = True
+                    
+                    # Pattern 2: Article number at start of line with proper indentation
+                    if context_before.endswith('\n              ') or context_before.endswith('            '):
+                        is_actual_article = True
+                    
+                    # Pattern 3: Article number followed by paragraph structure
+                    if re.search(rf'{article_pattern}\s*\n.*?\n.*?\n.*?[あ-ん]', extracted_text[pos:pos+300], re.DOTALL):
+                        is_actual_article = True
+                        
+                    if not is_actual_article:
+                        continue
+                    
+                    # Try multiple extraction strategies for this position
+                    strategies = [
+                        # Strategy 1: Article to next kanji article number
+                        f"{article_pattern}.*?(?=第[一二三四五六七八九十百千]+条)",
+                        
+                        # Strategy 2: Article excluding next "第" character  
+                        f"{article_pattern}[^第]*",
+                        
+                        # Strategy 3: Article to title pattern + next article
+                        f"{article_pattern}.*?(?=（[^）]*）\\s*第)",
+                        
+                        # Strategy 4: Fixed character limit
+                        f"{article_pattern}.{{0,2000}}"
+                    ]
+                    
+                    # Get context around this match
+                    context_start = max(0, pos - 20)
+                    context_end = min(len(extracted_text), pos + 3000)
+                    context = extracted_text[context_start:context_end]
+                    
+                    for strategy in strategies:
+                        matches_found = re.findall(strategy, context, re.DOTALL | re.MULTILINE)
+                        if matches_found:
+                            candidate = matches_found[0].strip()
+                            if len(candidate) > 50:
+                                # Score this candidate based on content quality
+                                content_score = 0
+                                
+                                # Heavily favor actual article content patterns
+                                content_score += 10  # Base score for being an actual article
+                                
+                                # Prefer longer content
+                                if len(candidate) > 200: content_score += 3
+                                elif len(candidate) > 100: content_score += 2
+                                
+                                # Prefer content with sentence endings
+                                if '。' in candidate: content_score += 3
+                                
+                                # Prefer content with commas (actual text)
+                                if '、' in candidate: content_score += 2
+                                
+                                # Prefer content with hiragana (actual content vs table)
+                                if re.search(r'[あ-ん]+', candidate): content_score += 3
+                                
+                                # Penalize reference patterns
+                                if '―' in candidate: content_score -= 5
+                                if candidate.count('第') > 3: content_score -= 2  # Too many references
+                                
+                                all_matches.append((content_score, candidate, pos))
+                                break
                 
-                if found_match:
-                    clean_match = found_match.strip()
-                    # Accept matches that look like complete articles
-                    if len(clean_match) > 30 and clean_match not in matches:
-                        # Ensure we have a complete sentence/clause ending
-                        if clean_match.endswith(('。', '）', '）。', '号', '項', '条')):
-                            matches.append(clean_match)
-                        else:
-                            # Try to find a good stopping point
-                            for ending in ['。', '）。', '号。', '項。']:
-                                if ending in clean_match:
-                                    last_pos = clean_match.rfind(ending)
-                                    if last_pos > len(clean_match) * 0.7:  # Must be in latter part
-                                        truncated = clean_match[:last_pos + len(ending)]
-                                        matches.append(truncated)
-                                        break
+                # Sort by content score (highest first) and take best matches
+                all_matches.sort(key=lambda x: x[0], reverse=True)
+                
+                # Process top scored matches
+                for score, candidate, pos in all_matches[:3]:  # Take top 3 candidates
+                    if score > 10:  # Only accept high-quality actual articles
+                        clean_match = candidate.strip()
+                        # Accept matches that look like complete articles
+                        if len(clean_match) > 30 and clean_match not in matches:
+                            # Ensure we have a complete sentence/clause ending
+                            if clean_match.endswith(('。', '）', '）。', '号', '項', '条')):
+                                matches.append(clean_match)
                             else:
-                                # If no good ending found, use as-is if substantial
-                                if len(clean_match) > 100:
-                                    matches.append(clean_match)
+                                # Try to find a good stopping point
+                                for ending in ['。', '）。', '号。', '項。']:
+                                    if ending in clean_match:
+                                        last_pos = clean_match.rfind(ending)
+                                        if last_pos > len(clean_match) * 0.7:  # Must be in latter part
+                                            truncated = clean_match[:last_pos + len(ending)]
+                                            matches.append(truncated)
+                                            break
+                                else:
+                                    # If no good ending found, use as-is if substantial
+                                    if len(clean_match) > 100:
+                                        matches.append(clean_match)
             
             # Format result
             law_info_data = data.get('law_info', {})
@@ -477,16 +537,15 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
         law_id: Law ID
         law_num: Law number
         response_format: "json" or "xml"
-        elm: Element to retrieve (e.g., "Honbun" for main body only) - per API spec
+        elm: Element to retrieve (currently disabled due to API 400 errors)
     
     Returns:
         Law content in specified format. For large laws (>800KB), returns summary with recommendation to use find_law_article for specific articles.
         
     Note:
-        - Uses API spec elm parameter for selective retrieval
+        - elm parameter is currently disabled due to e-Gov API 400 errors
         - Large laws like Company Law (会社法) will return a summary instead of full text
         - Use find_law_article tool for specific article searches in large laws
-        - elm="Honbun" retrieves main body only (recommended for large laws)
     """
     if not law_id and not law_num:
         return "Error: Either law_id or law_num must be specified"
@@ -498,10 +557,10 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
     if response_format == "xml":
         params["law_full_text_format"] = "xml"
     
-    # Per API spec: use elm parameter for selective retrieval of large documents
-    # This helps avoid response size issues
-    if elm:
-        params["elm"] = elm
+    # Note: elm parameter causes 400 errors with current e-Gov API
+    # Commented out to avoid API errors
+    # if elm:
+    #     params["elm"] = elm
     
     try:
         async with await get_http_client() as client:
