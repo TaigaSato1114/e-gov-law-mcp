@@ -4,10 +4,13 @@
 
 ### FastMCP設定（最も簡単）
 
-以下のコマンドを実行するだけ：
-
 ```bash
-uvx fastmcp install github:ryoooo/e-gov-law-mcp -n "e-Gov Law Server"
+# 1. リポジトリをクローン
+git clone https://github.com/ryoooo/e-gov-law-mcp.git
+cd e-gov-law-mcp
+
+# 2. FastMCP CLIで設定
+uvx fastmcp install src/mcp_server.py:mcp -n "e-Gov Law Server"
 ```
 
 **それだけです！** 自動的にClaude Desktopの設定が追加されます。

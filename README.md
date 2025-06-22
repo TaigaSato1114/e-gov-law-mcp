@@ -41,15 +41,20 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-### 方法1: FastMCP CLIで自動設定（推奨・最も簡単）
+### 方法1: ローカルインストール（推奨）
 
 ```bash
-uvx fastmcp install github:ryoooo/e-gov-law-mcp -n "e-Gov Law Server"
+# リポジトリをクローン
+git clone https://github.com/ryoooo/e-gov-law-mcp.git
+cd e-gov-law-mcp
+
+# FastMCP CLIで設定
+uvx fastmcp install src/mcp_server.py:mcp -n "e-Gov Law Server"
 ```
 
 自動的にClaude Desktopの設定が追加されます。
 
-### 方法2: ローカルインストール
+### 方法2: 手動設定
 
 ```bash
 # リポジトリをクローン
@@ -58,9 +63,25 @@ cd e-gov-law-mcp
 
 # 依存関係をインストール
 uv sync
+```
 
-# サーバー起動
-uv run python src/mcp_server.py
+その後、Claude Desktopの設定ファイルに手動で追加：
+
+```json
+{
+  "mcpServers": {
+    "e-gov-law": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "C:\\path\\to\\e-gov-law-mcp",
+        "python",
+        "src/mcp_server.py"
+      ]
+    }
+  }
+}
 ```
 
 ## Claude Desktop設定
