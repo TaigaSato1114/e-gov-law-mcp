@@ -101,3 +101,6 @@ mcp_debug.log
 *.local.*
 local_*
 !local_example*
+
+# Development documentation (Claude-specific)
+CLAUDE.md

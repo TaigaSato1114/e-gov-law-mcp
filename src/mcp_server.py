@@ -38,13 +38,37 @@ mcp = FastMCP(
     on_duplicate_tools="warn"
 )
 
+# LAW ALIASES MAPPING (略称・通称から正式名称へ)
+LAW_ALIASES = {
+    # 一般的な略称
+    "道交法": "道路交通法",
+    "労基法": "労働基準法",
+    "独禁法": "独占禁止法",
+    "消契法": "消費者契約法",
+    "著作権": "著作権法",
+    "特許": "特許法",
+    "建基法": "建築基準法",
+    
+    # 分野別検索
+    "税法": "所得税法",  # デフォルトで所得税法を選択
+    "労働法": "労働基準法",
+    "知財法": "著作権法",
+    "交通法": "道路交通法",
+    
+    # 一般的な呼び方
+    "会社": "会社法",
+    "民事": "民法",
+    "刑事": "刑法",
+    "訴訟": "民事訴訟法",
+}
+
 # COMPREHENSIVE BASIC LAWS MAPPING (16 major laws)
 BASIC_LAWS = {
     # 六法 (Six Codes)
     "民法": "明治二十九年法律第八十九号",
     "憲法": "昭和二十一年憲法",
     "日本国憲法": "昭和二十一年憲法",
-    "刑法": "令和四年法律第六十八号",
+    "刑法": "明治四十年法律第四十五号",
     "商法": "昭和二十三年法律第二十五号",
     "民事訴訟法": "平成八年法律第百九号",
     "刑事訴訟法": "昭和二十三年法律第百三十一号",
@@ -52,9 +76,9 @@ BASIC_LAWS = {
     # 現代重要法 (Modern Key Laws)
     "会社法": "平成十七年法律第八十六号",
     "労働基準法": "昭和二十二年法律第四十九号",
-    "所得税法": "令和六年法律第一号",
-    "法人税法": "平成二十六年法律第十一号",
-    "著作権法": "昭和三十一年法律第八十六号",
+    "所得税法": "昭和四十年法律第三十三号",
+    "法人税法": "昭和四十年法律第三十四号",
+    "著作権法": "昭和四十五年法律第四十八号",
     "特許法": "昭和三十四年法律第百二十一号",
     "道路交通法": "昭和三十五年法律第百五号",
     "建築基準法": "昭和二十五年法律第二百一号",
@@ -198,15 +222,22 @@ def generate_search_patterns(article_input: str) -> List[str]:
     return list(dict.fromkeys(patterns))
 
 async def smart_law_lookup(law_name: str) -> Optional[str]:
-    """Smart law lookup with direct mapping fallback to search."""
+    """Smart law lookup with formal name verification and direct mapping fallback to search."""
     law_name_clean = law_name.strip()
+    original_input = law_name_clean
     
-    # Step 1: Check direct mapping
+    # Step 1: Check for aliases and convert to formal name
+    if law_name_clean in LAW_ALIASES:
+        formal_name = LAW_ALIASES[law_name_clean]
+        logger.info(f"Alias conversion: '{original_input}' -> '{formal_name}'")
+        law_name_clean = formal_name
+    
+    # Step 2: Check direct mapping with formal name
     if law_name_clean in BASIC_LAWS:
         logger.info(f"Direct mapping: {law_name_clean} -> {BASIC_LAWS[law_name_clean]}")
         return BASIC_LAWS[law_name_clean]
     
-    # Step 2: Intelligent search for unknown laws
+    # Step 3: Intelligent search for unknown laws
     async with await get_http_client() as client:
         response = await client.get("/laws", params={
             "law_title": law_name_clean,
@@ -219,7 +250,14 @@ async def smart_law_lookup(law_name: str) -> Optional[str]:
         laws = data.get("laws", [])
         
         if not laws:
+            logger.warning(f"No laws found for search term: {law_name_clean} (original: {original_input})")
             return None
+        
+        # Log search results for transparency
+        logger.info(f"Found {len(laws)} candidate laws for '{law_name_clean}' (original: '{original_input}')")
+        for i, law in enumerate(laws[:3]):  # Log top 3 candidates
+            law_info = law.get('law_info', {})
+            logger.info(f"  Candidate {i+1}: {law_info.get('law_title', 'N/A')} ({law_info.get('law_num', 'N/A')})")
         
         # Smart scoring for best law selection
         def score_law(law_info):
@@ -255,7 +293,11 @@ async def smart_law_lookup(law_name: str) -> Optional[str]:
             return score
         
         best_law = max(laws, key=lambda law: score_law(law.get("law_info", {})))
-        return best_law.get("law_info", {}).get("law_num")
+        selected_law_num = best_law.get("law_info", {}).get("law_num")
+        selected_law_title = best_law.get("law_info", {}).get("law_title")
+        
+        logger.info(f"Selected law: {selected_law_title} ({selected_law_num}) for search term '{law_name_clean}' (original: '{original_input}')")
+        return selected_law_num
 
 @mcp.tool
 async def find_law_article(law_name: str, article_number: str) -> str:
@@ -278,7 +320,16 @@ async def find_law_article(law_name: str, article_number: str) -> str:
         return "Error: article_number is required"
     
     try:
-        # Step 1: Smart law lookup
+        # Step 1: Smart law lookup with formal name verification
+        original_law_input = law_name
+        formal_law_name = law_name
+        name_conversion_applied = False
+        
+        # Check if alias conversion is needed
+        if law_name.strip() in LAW_ALIASES:
+            formal_law_name = LAW_ALIASES[law_name.strip()]
+            name_conversion_applied = True
+        
         law_num = await smart_law_lookup(law_name)
         if not law_num:
             return f"Error: Law '{law_name}' not found"
@@ -415,18 +466,23 @@ async def find_law_article(law_name: str, article_number: str) -> str:
                                     if len(clean_match) > 100:
                                         matches.append(clean_match)
             
-            # Format result
+            # Format result with formal name verification info
             law_info_data = data.get('law_info', {})
+            actual_law_title = law_info_data.get('law_title', formal_law_name)
+            
             result = {
                 "law_info": law_info_data,
-                "search_law_name": law_name,
+                "search_law_name": original_law_input,
+                "formal_law_name_used": formal_law_name,
+                "actual_law_title": actual_law_title,
+                "name_conversion_applied": name_conversion_applied,
                 "search_article": article_number,
-                "found_law": law_info_data.get('law_title', law_name),
+                "found_law": actual_law_title,
                 "law_number": law_num,
                 "matches_found": len(matches),
                 "articles": matches[:3] if matches else [],
-                "note": f"Searched for article '{article_number}' in '{law_name}'",
-                "legal_analysis_instruction": "【重要】日本の法律の専門家として、この条文について以下のように回答してください：\n\n■ 1. 条文の正確な全文引用（必須）\n検索結果の「articles」に含まれる条文テキストを、一字一句正確に引用してください。条文番号、項、号まで含めて完全に表示してください。\n\n例：\n「第百九十二条　取引行為によって、平穏に、かつ、公然と動産の占有を始めた者は、善意であり、かつ、過失がないときは、即時にその動産について行使する権利を取得する。」\n\n■ 2. 法的分析（条文を引用しながら説明）\n上記で引用した条文の重要な文言を「」で再度引用しながら、以下の観点から詳細に分析してください：\n・条文の趣旨（立法目的・背景）\n・要件（適用要件・前提条件）\n・法的効果（権利義務の発生・変更・消滅）\n・実務上の注意点・関連判例\n・他の条文との関係性\n\n例：「取引行為によって」という要件は有償取引を前提とし、「善意であり、かつ、過失がない」という要件は主観的要件を示します。\n\n条文の正確な引用と法的分析を組み合わせた専門的で実用的な回答をお願いします。"
+                "note": f"Searched for article '{article_number}' in '{actual_law_title}'{' (converted from: ' + original_law_input + ')' if name_conversion_applied else ''}",
+                "legal_analysis_instruction": "【重要】日本の法律の専門家として、この条文について以下のように回答してください：\n\n■ 0. 検索対象法律の確認（必須）\n検索結果の「actual_law_title」と「law_number」を確認し、正しい法律で検索されたことを明記してください。\n「name_conversion_applied」がtrueの場合は、略称から正式名称への変換が行われたことも説明してください。\n\n例：\n「民法（明治二十九年法律第八十九号）の第百九十二条について分析します。」\n「労基法として検索されましたが、正式名称は労働基準法です。」\n\n■ 1. 条文の正確な全文引用（必須）\n検索結果の「articles」に含まれる条文テキストを、一字一句正確に引用してください。条文番号、項、号まで含めて完全に表示してください。\n\n例：\n「第百九十二条　取引行為によって、平穏に、かつ、公然と動産の占有を始めた者は、善意であり、かつ、過失がないときは、即時にその動産について行使する権利を取得する。」\n\n■ 2. 法的分析（条文を引用しながら説明）\n上記で引用した条文の重要な文言を「」で再度引用しながら、以下の観点から詳細に分析してください：\n・条文の趣旨（立法目的・背景）\n・要件（適用要件・前提条件）\n・法的効果（権利義務の発生・変更・消滅）\n・実務上の注意点・関連判例\n・他の条文との関係性\n\n例：「取引行為によって」という要件は有償取引を前提とし、「善意であり、かつ、過失がない」という要件は主観的要件を示します。\n\n正式法律名の確認、条文の正確な引用、法的分析を組み合わせた専門的で実用的な回答をお願いします。"
             }
             
             if not matches:
