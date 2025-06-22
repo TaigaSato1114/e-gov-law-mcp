@@ -193,15 +193,43 @@ Claude Desktopの設定ファイルに追加してください：
 }
 ```
 
-#### FastMCP CLI使用（推奨・最も簡単）：
-プロジェクトディレクトリで以下を実行するだけで自動設定されます：
+#### 3つのインストール方法：
+
+**方法1: uvxで直接インストール（最も簡単・fastmcp不要）**
 
 ```bash
-# Windows/macOS/Linux共通
+# GitHubから直接実行
+uvx --from github:ryoooo/e-gov-law-mcp e-gov-law
+
+# PyPIから実行（パッケージ公開後）
+# uvx e-gov-law-mcp
+```
+
+その後、Claude Desktopの設定に以下を追加：
+```json
+{
+  "mcpServers": {
+    "e-gov-law": {
+      "command": "uvx",
+      "args": ["--from", "github:ryoooo/e-gov-law-mcp", "e-gov-law"]
+    }
+  }
+}
+```
+
+**方法2: FastMCP CLIで自動設定**
+
+```bash
+# GitHubから
+uvx fastmcp install github:ryoooo/e-gov-law-mcp -n "e-Gov Law Server"
+
+# ローカルプロジェクトから
 uv run fastmcp install src/mcp_server.py:mcp -n "e-Gov Law Server"
 ```
 
-これにより、Claude Desktopの設定が自動的に追加されます。
+**方法3: 手動設定**
+
+前述の手動設定セクションを参照してください。
 
 ## 利用可能なツール
 

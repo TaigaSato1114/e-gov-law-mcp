@@ -510,7 +510,8 @@ def get_law_types() -> dict:
         "basic_laws": BASIC_LAWS
     }
 
-if __name__ == "__main__":
+def main():
+    """Entry point for direct uvx installation"""
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="e-Gov Law MCP Server v2")
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
@@ -528,3 +529,6 @@ if __name__ == "__main__":
             host=args.host,
             port=args.port
         )
+
+if __name__ == "__main__":
+    main()

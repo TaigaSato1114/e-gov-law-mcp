@@ -41,13 +41,18 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-username/e-gov-law-mcp"
-Repository = "https://github.com/your-username/e-gov-law-mcp"
-Documentation = "https://github.com/your-username/e-gov-law-mcp#readme"
-"Bug Tracker" = "https://github.com/your-username/e-gov-law-mcp/issues"
+Homepage = "https://github.com/ryoooo/e-gov-law-mcp"
+Repository = "https://github.com/ryoooo/e-gov-law-mcp"
+Documentation = "https://github.com/ryoooo/e-gov-law-mcp#readme"
+"Bug Tracker" = "https://github.com/ryoooo/e-gov-law-mcp/issues"
 
 [project.scripts]
 e-gov-law-mcp = "src.mcp_server:main"
+e-gov-law = "src.mcp_server:main"
+
+# FastMCP entry point for uvx
+[project.entry-points."fastmcp.mcp_server.python"]
+e-gov-law = "src.mcp_server:mcp"
 
 [build-system]
 requires = ["hatchling"]

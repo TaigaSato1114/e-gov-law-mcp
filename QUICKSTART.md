@@ -1,66 +1,67 @@
-# 🚀 e-Gov法令MCP v2 クイックスタートガイド
+# e-Gov Law MCP Server クイックスタートガイド
 
-## 最速セットアップ（3ステップ・5分で完了）
+## 最速セットアップ（30秒で完了）
 
-### ステップ 1: uvのインストール（30秒）
-
-#### Windows
-```powershell
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-#### macOS/Linux
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### ステップ 2: プロジェクトのセットアップ（2分）
+### 1. uvxでワンラインインストール（推奨）
 
 ```bash
-# プロジェクトをクローン
-git clone https://github.com/ryoooo/e-gov-law-mcp.git
-cd e-gov-law-mcp
-
-# 依存関係をインストール
-uv sync
+# Claude Desktopの設定に自動追加（fastmcp使用）
+uvx fastmcp install github:ryoooo/e-gov-law-mcp -n "e-Gov Law Server"
 ```
 
-### ステップ 3: Claude Desktopへの自動インストール（30秒）
+### 2. uvxで直接実行（fastmcp不要）
 
 ```bash
-# 1コマンドで完了！
-uv run fastmcp install src/mcp_server.py:mcp -n "e-Gov Law Server"
+# テスト実行
+uvx --from github:ryoooo/e-gov-law-mcp e-gov-law
 ```
 
-**完了！** Claude Desktopを再起動すれば使えます。
-
-## 動作確認
-
-Claude Desktopで以下のように質問してみてください：
-
-```
-民法192条について教えて
-```
-
-または
-
-```
-会社法325条の3の内容を調べて
+Claude Desktopの設定に手動で追加：
+```json
+{
+  "mcpServers": {
+    "e-gov-law": {
+      "command": "uvx",
+      "args": ["--from", "github:ryoooo/e-gov-law-mcp", "e-gov-law"]
+    }
+  }
+}
 ```
 
-## 詳細設定
+## 使い方
 
-より詳しい設定については：
-- [Windows環境の詳細設定](WINDOWS_SETUP.md)
-- [完全なREADME](README.md)
+Claude Desktopを再起動後、以下のように質問してください：
+
+```
+民法192条を教えて
+憲法9条について説明して
+会社法325条の3を調べて
+労働基準法の有給休暇について検索して
+```
 
 ## トラブルシューティング
 
-### Q: uvコマンドが見つからない
-A: ターミナル/PowerShellを再起動してください
+### uvxがインストールされていない場合
 
-### Q: Claude Desktopでサーバーが認識されない
-A: Claude Desktopを完全に終了して再起動してください
+```bash
+# uvをインストール（uvxも含まれます）
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-### Q: エラーが出る
-A: `uv run pytest tests/` でテストを実行して問題を確認してください
+# または
+pip install uv
+```
+
+### Windows環境の場合
+
+PowerShellで実行：
+```powershell
+# uvのインストール
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# e-Gov Lawサーバーの設定
+uvx fastmcp install github:ryoooo/e-gov-law-mcp -n "e-Gov Law Server"
+```
+
+### 詳細な設定方法
+
+より詳しい設定方法は[README.md](README.md)を参照してください。
