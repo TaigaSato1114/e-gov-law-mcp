@@ -283,11 +283,21 @@ async def find_law_article(law_name: str, article_number: str) -> str:
         if not law_num:
             return f"Error: Law '{law_name}' not found"
         
-        # Step 2: Get complete law text (XML format for full content)
+        # Step 2: Get law text optimally per API spec
+        # Use XML format and elm parameter for efficient retrieval
         async with await get_http_client() as client:
+            # First try with main body only (API spec recommends selective retrieval)
             response = await client.get(f"/law_data/{law_num}", params={
-                "law_full_text_format": "xml"
+                "law_full_text_format": "xml",
+                "elm": "Honbun"  # Main body only per API spec
             })
+            
+            # Fallback to full document if Honbun parameter fails
+            if response.status_code != 200:
+                response = await client.get(f"/law_data/{law_num}", params={
+                    "law_full_text_format": "xml"
+                })
+            
             response.raise_for_status()
             
             data = json.loads(response.text)
@@ -299,26 +309,51 @@ async def find_law_article(law_name: str, article_number: str) -> str:
             matches = []
             
             for pattern in patterns:
-                # Smart text extraction with adaptive limits
-                # - 100 chars before pattern for context
-                # - Variable length after pattern based on content structure
-                # - API spec recommends being selective to avoid large response errors
+                # Enhanced text extraction for complete articles
                 base_pattern = f".{{0,100}}{re.escape(pattern)}"
                 
-                # First try: Look for natural boundaries (次条, 附則, etc.)
-                boundary_pattern = f"{base_pattern}.*?(?=第.*?条|附則|別表|$)"
-                found = re.findall(boundary_pattern, extracted_text, re.DOTALL)
+                # Try multiple extraction strategies in order of preference
+                extraction_strategies = [
+                    # Strategy 1: Natural boundaries (next article, appendix, etc.)
+                    f"{base_pattern}.*?(?=第\\d+条|第[一二三四五六七八九十百千]+条|附則|別表|別記|$)",
+                    
+                    # Strategy 2: Complete paragraphs and items (wider boundaries)
+                    f"{base_pattern}.*?(?=^\\s*第\\d+条|^\\s*第[一二三四五六七八九十百千]+条|^\\s*附則|^\\s*別表|$)",
+                    
+                    # Strategy 3: Generous character limit for complex articles
+                    f"{base_pattern}.{{0,3000}}",
+                    
+                    # Strategy 4: Maximum fallback
+                    f"{base_pattern}.{{0,5000}}"
+                ]
                 
-                # Fallback: Use conservative 1500 char limit (API-safe)
-                if not found:
-                    fallback_pattern = f"{base_pattern}.{{0,1500}}"
-                    found = re.findall(fallback_pattern, extracted_text, re.DOTALL)
+                found_match = None
+                for strategy in extraction_strategies:
+                    found = re.findall(strategy, extracted_text, re.DOTALL | re.MULTILINE)
+                    if found:
+                        found_match = found[0]
+                        break
                 
-                for match in found:
-                    clean_match = match.strip()
-                    # Ensure we capture complete sentences/clauses
-                    if len(clean_match) > 50 and clean_match not in matches:
-                        matches.append(clean_match)
+                if found_match:
+                    clean_match = found_match.strip()
+                    # Accept matches that look like complete articles
+                    if len(clean_match) > 30 and clean_match not in matches:
+                        # Ensure we have a complete sentence/clause ending
+                        if clean_match.endswith(('。', '）', '）。', '号', '項', '条')):
+                            matches.append(clean_match)
+                        else:
+                            # Try to find a good stopping point
+                            for ending in ['。', '）。', '号。', '項。']:
+                                if ending in clean_match:
+                                    last_pos = clean_match.rfind(ending)
+                                    if last_pos > len(clean_match) * 0.7:  # Must be in latter part
+                                        truncated = clean_match[:last_pos + len(ending)]
+                                        matches.append(truncated)
+                                        break
+                            else:
+                                # If no good ending found, use as-is if substantial
+                                if len(clean_match) > 100:
+                                    matches.append(clean_match)
             
             # Format result
             law_info_data = data.get('law_info', {})
@@ -331,7 +366,7 @@ async def find_law_article(law_name: str, article_number: str) -> str:
                 "matches_found": len(matches),
                 "articles": matches[:3] if matches else [],
                 "note": f"Searched for article '{article_number}' in '{law_name}'",
-                "legal_analysis_instruction": "【重要】日本の法律の専門家として、この条文について以下のように回答してください：\n\n■ 1. 条文の全文表示\nまず条文の正確な全文を「」で囲んで明確に表示してください。\n\n■ 2. 法的分析（条文を引用しながら説明）\n条文の重要な文言を「」で引用しながら、以下の観点から詳細に分析してください：\n・条文の趣旨（立法目的・背景）\n・構成要件（適用要件・前提条件）\n・法的効果（権利義務の発生・変更・消滅）\n・実務上の注意点・関連判例\n・他の条文との関係性\n\n例：「○○をした者は」という要件部分と「○○の責任を負う」という効果部分を明確に区分して説明してください。条文の引用と法的分析を組み合わせた専門的で実用的な回答をお願いします。"
+                "legal_analysis_instruction": "【重要】日本の法律の専門家として、この条文について以下のように回答してください：\n\n■ 1. 条文の正確な全文引用（必須）\n検索結果の「articles」に含まれる条文テキストを、一字一句正確に引用してください。条文番号、項、号まで含めて完全に表示してください。\n\n例：\n「第百九十二条　取引行為によって、平穏に、かつ、公然と動産の占有を始めた者は、善意であり、かつ、過失がないときは、即時にその動産について行使する権利を取得する。」\n\n■ 2. 法的分析（条文を引用しながら説明）\n上記で引用した条文の重要な文言を「」で再度引用しながら、以下の観点から詳細に分析してください：\n・条文の趣旨（立法目的・背景）\n・構成要件（適用要件・前提条件）\n・法的効果（権利義務の発生・変更・消滅）\n・実務上の注意点・関連判例\n・他の条文との関係性\n\n例：「取引行為によって」という要件は有償取引を前提とし、「善意であり、かつ、過失がない」という要件は主観的要件を示します。\n\n条文の正確な引用と法的分析を組み合わせた専門的で実用的な回答をお願いします。"
             }
             
             if not matches:
@@ -434,21 +469,24 @@ async def search_laws_by_keyword(keyword: str, law_type: str = "", limit: int = 
         return f"Keyword Search Error: {str(e)}"
 
 @mcp.tool
-async def get_law_content(law_id: str = "", law_num: str = "", response_format: str = "json") -> str:
+async def get_law_content(law_id: str = "", law_num: str = "", response_format: str = "json", elm: str = "") -> str:
     """
-    Get law content (with size limits for large laws)
+    Get law content (optimized per API spec with size limits)
     
     Args:
         law_id: Law ID
         law_num: Law number
         response_format: "json" or "xml"
+        elm: Element to retrieve (e.g., "Honbun" for main body only) - per API spec
     
     Returns:
         Law content in specified format. For large laws (>800KB), returns summary with recommendation to use find_law_article for specific articles.
         
     Note:
-        Large laws like Company Law (会社法) will return a summary instead of full text to avoid response size limits.
-        Use find_law_article tool for specific article searches in large laws.
+        - Uses API spec elm parameter for selective retrieval
+        - Large laws like Company Law (会社法) will return a summary instead of full text
+        - Use find_law_article tool for specific article searches in large laws
+        - elm="Honbun" retrieves main body only (recommended for large laws)
     """
     if not law_id and not law_num:
         return "Error: Either law_id or law_num must be specified"
@@ -459,6 +497,11 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
     params = {}
     if response_format == "xml":
         params["law_full_text_format"] = "xml"
+    
+    # Per API spec: use elm parameter for selective retrieval of large documents
+    # This helps avoid response size issues
+    if elm:
+        params["elm"] = elm
     
     try:
         async with await get_http_client() as client:
