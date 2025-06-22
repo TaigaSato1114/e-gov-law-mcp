@@ -436,7 +436,7 @@ async def search_laws_by_keyword(keyword: str, law_type: str = "", limit: int = 
 @mcp.tool
 async def get_law_content(law_id: str = "", law_num: str = "", response_format: str = "json") -> str:
     """
-    Get complete law content
+    Get law content (with size limits for large laws)
     
     Args:
         law_id: Law ID
@@ -444,7 +444,11 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
         response_format: "json" or "xml"
     
     Returns:
-        Complete law content in specified format
+        Law content in specified format. For large laws (>800KB), returns summary with recommendation to use find_law_article for specific articles.
+        
+    Note:
+        Large laws like Company Law (会社法) will return a summary instead of full text to avoid response size limits.
+        Use find_law_article tool for specific article searches in large laws.
     """
     if not law_id and not law_num:
         return "Error: Either law_id or law_num must be specified"
@@ -464,6 +468,36 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
             if response_format == "json":
                 # Format JSON response for better readability
                 data = json.loads(response.text)
+                
+                # Check response size and truncate if necessary
+                response_str = json.dumps(data, ensure_ascii=False, indent=2)
+                if len(response_str) > 800000:  # 800KB limit (留余裕給其他數據)
+                    # Create summary instead of full text for large laws
+                    law_info = data.get('law_info', {})
+                    summary = {
+                        "law_info": law_info,
+                        "warning": "法令全文が長すぎるため、概要のみ表示しています。",
+                        "recommendation": "特定の条文を検索する場合は find_law_article ツールを使用してください。",
+                        "law_stats": {
+                            "original_size_bytes": len(response_str),
+                            "law_title": law_info.get('law_title', ''),
+                            "law_num": law_info.get('law_num', ''),
+                            "promulgation_date": law_info.get('promulgation_date', '')
+                        }
+                    }
+                    
+                    # Try to include table of contents if available
+                    law_full_text = data.get('law_full_text', {})
+                    if isinstance(law_full_text, dict):
+                        # Extract structure information
+                        if 'chapters' in str(law_full_text).lower() or '章' in str(law_full_text):
+                            summary["structure_note"] = "この法令は章立て構造を持っています。"
+                        if 'sections' in str(law_full_text).lower() or '節' in str(law_full_text):
+                            summary["structure_note"] = summary.get("structure_note", "") + " 節による区分があります。"
+                    
+                    return json.dumps(summary, ensure_ascii=False, indent=2)
+                
+                # For smaller responses, add readable text
                 law_full_text = data.get('law_full_text', {})
                 if isinstance(law_full_text, str):
                     # Extract readable text from XML
@@ -471,7 +505,19 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
                 
                 return json.dumps(data, ensure_ascii=False, indent=2)
             else:
-                return response.text
+                # For XML format, check size and truncate if needed
+                if len(response.text) > 800000:
+                    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<law_content_summary>
+    <warning>法令全文が長すぎるため、概要のみ表示しています。</warning>
+    <recommendation>特定の条文を検索する場合は find_law_article ツールを使用してください。</recommendation>
+    <original_size_bytes>{len(response.text)}</original_size_bytes>
+    <truncated_content>
+        {response.text[:1000]}...
+    </truncated_content>
+</law_content_summary>"""
+                else:
+                    return response.text
                 
     except Exception as e:
         logger.error(f"Get law content error: {e}")
