@@ -1,31 +1,29 @@
 # e-Gov Law MCP Server クイックスタートガイド
 
-## 最速セットアップ（30秒で完了）
+## 最速セットアップ（15秒で完了）
 
-### 1. uvxでワンラインインストール（推奨）
+### uvx一発設定（最も簡単）
 
-```bash
-# Claude Desktopの設定に自動追加（fastmcp使用）
-uvx fastmcp install github:ryoooo/e-gov-law-mcp -n "e-Gov Law Server"
-```
+Claude Desktopの設定ファイルに以下を追加するだけ：
 
-### 2. uvxで直接実行（fastmcp不要）
-
-```bash
-# テスト実行
-uvx --from github:ryoooo/e-gov-law-mcp e-gov-law
-```
-
-Claude Desktopの設定に手動で追加：
 ```json
 {
   "mcpServers": {
     "e-gov-law": {
       "command": "uvx",
-      "args": ["--from", "github:ryoooo/e-gov-law-mcp", "e-gov-law"]
+      "args": ["e-gov-law-mcp"]
     }
   }
 }
+```
+
+**それだけです！** uvxが自動的にパッケージをダウンロード・実行します。
+
+### FastMCPで自動設定（代替案）
+
+```bash
+# Claude Desktopの設定に自動追加
+uvx fastmcp install github:ryoooo/e-gov-law-mcp -n "e-Gov Law Server"
 ```
 
 ## 使い方

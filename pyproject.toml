@@ -48,7 +48,6 @@ Documentation = "https://github.com/ryoooo/e-gov-law-mcp#readme"
 
 [project.scripts]
 e-gov-law-mcp = "src.mcp_server:main"
-e-gov-law = "src.mcp_server:main"
 
 # FastMCP entry point for uvx
 [project.entry-points."fastmcp.mcp_server.python"]
