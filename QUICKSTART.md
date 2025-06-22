@@ -2,29 +2,15 @@
 
 ## 最速セットアップ（15秒で完了）
 
-### uvx設定（最も簡単）
+### FastMCP設定（最も簡単）
 
-Claude Desktopの設定ファイルに以下を追加するだけ：
-
-```json
-{
-  "mcpServers": {
-    "e-gov-law": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/ryoooo/e-gov-law-mcp.git", "e-gov-law-mcp"]
-    }
-  }
-}
-```
-
-**それだけです！** uvxが自動的にパッケージをダウンロード・実行します。
-
-### FastMCPで自動設定（代替案）
+以下のコマンドを実行するだけ：
 
 ```bash
-# Claude Desktopの設定に自動追加
 uvx fastmcp install github:ryoooo/e-gov-law-mcp -n "e-Gov Law Server"
 ```
+
+**それだけです！** 自動的にClaude Desktopの設定が追加されます。
 
 ## 使い方
 
