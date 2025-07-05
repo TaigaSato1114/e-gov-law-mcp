@@ -7,7 +7,7 @@ Drastically simplified from 1000+ lines to <500 lines while adding more function
 
 Key Improvements:
 - Direct mapping for 16+ major laws (六法 + key legislation)
-- Smart Base64/XML text extraction 
+- Smart Base64/XML text extraction
 - Efficient article search with intelligent pattern matching
 - Minimal API calls with maximum accuracy
 - Clean, maintainable code architecture
@@ -19,10 +19,14 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import xml.etree.ElementTree as ET
-from typing import Any, Dict, List, Optional
+from collections import OrderedDict
+from typing import Any, Optional
 
 import httpx
+import psutil
 import yaml
 from fastmcp import FastMCP
 
@@ -34,6 +38,253 @@ except ImportError:
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Performance optimization classes
+class LRUCache:
+    """Thread-safe LRU cache implementation with TTL support"""
+
+    def __init__(self, max_size: int = 100, ttl: int = 3600):
+        self.max_size = max_size
+        self.ttl = ttl
+        self.cache = OrderedDict()
+        self.timestamps = {}
+        self.lock = threading.RLock()
+
+    def get(self, key: str) -> Optional[Any]:
+        with self.lock:
+            if key not in self.cache:
+                return None
+
+            # Check TTL
+            if time.time() - self.timestamps[key] > self.ttl:
+                del self.cache[key]
+                del self.timestamps[key]
+                return None
+
+            # Move to end (most recently used)
+            self.cache.move_to_end(key)
+            return self.cache[key]
+
+    def put(self, key: str, value: Any) -> None:
+        with self.lock:
+            if key in self.cache:
+                # Update existing key
+                self.cache[key] = value
+                self.timestamps[key] = time.time()
+                self.cache.move_to_end(key)
+            else:
+                # Add new key
+                if len(self.cache) >= self.max_size:
+                    # Remove least recently used
+                    oldest_key = next(iter(self.cache))
+                    del self.cache[oldest_key]
+                    del self.timestamps[oldest_key]
+
+                self.cache[key] = value
+                self.timestamps[key] = time.time()
+
+    def clear(self) -> None:
+        with self.lock:
+            self.cache.clear()
+            self.timestamps.clear()
+
+    def size(self) -> int:
+        with self.lock:
+            return len(self.cache)
+
+    def cleanup_expired(self) -> None:
+        """Remove expired entries"""
+        with self.lock:
+            current_time = time.time()
+            expired_keys = [
+                key for key, timestamp in self.timestamps.items()
+                if current_time - timestamp > self.ttl
+            ]
+            for key in expired_keys:
+                del self.cache[key]
+                del self.timestamps[key]
+
+class MemoryMonitor:
+    """Memory usage monitoring for cache management"""
+
+    def __init__(self, max_memory_mb: int = 512):
+        self.max_memory_mb = max_memory_mb
+        self.process = psutil.Process()
+
+    def get_memory_usage_mb(self) -> float:
+        """Get current memory usage in MB"""
+        return self.process.memory_info().rss / 1024 / 1024
+
+    def is_memory_limit_exceeded(self) -> bool:
+        """Check if memory limit is exceeded"""
+        return self.get_memory_usage_mb() > self.max_memory_mb
+
+class CacheManager:
+    """Centralized cache management with prefetching and batch operations"""
+
+    def __init__(self):
+        self.law_lookup_cache = LRUCache(max_size=200, ttl=7200)  # 2 hours
+        self.law_content_cache = LRUCache(max_size=50, ttl=3600)  # 1 hour
+        self.article_cache = LRUCache(max_size=500, ttl=1800)     # 30 minutes
+        self.memory_monitor = MemoryMonitor()
+        self.batch_pending = {}
+        self.batch_lock = threading.Lock()
+
+        # Common law articles for prefetching
+        self.common_articles = [
+            ("民法", "1"), ("民法", "192"), ("民法", "709"),
+            ("憲法", "9"), ("憲法", "14"), ("憲法", "25"),
+            ("会社法", "1"), ("会社法", "105"), ("会社法", "362"),
+            ("刑法", "1"), ("刑法", "199"), ("刑法", "235"),
+        ]
+
+    def get_cache_key(self, law_name: str, article_number: str = None) -> str:
+        """Generate cache key"""
+        if article_number:
+            return f"{law_name}:{article_number}"
+        return law_name
+
+    def should_clear_cache(self) -> bool:
+        """Check if cache should be cleared due to memory pressure"""
+        return self.memory_monitor.is_memory_limit_exceeded()
+
+    def cleanup_if_needed(self) -> None:
+        """Cleanup expired entries and manage memory"""
+        if self.should_clear_cache():
+            logger.info("Memory limit exceeded, clearing caches")
+            self.law_lookup_cache.clear()
+            self.law_content_cache.clear()
+            self.article_cache.clear()
+        else:
+            self.law_lookup_cache.cleanup_expired()
+            self.law_content_cache.cleanup_expired()
+            self.article_cache.cleanup_expired()
+
+    async def prefetch_common_articles(self, client: httpx.AsyncClient) -> None:
+        """Prefetch commonly accessed articles"""
+        logger.info("Starting prefetch of common articles")
+
+        for law_name, article_number in self.common_articles:
+            cache_key = self.get_cache_key(law_name, article_number)
+
+            # Skip if already cached
+            if self.article_cache.get(cache_key):
+                continue
+
+            try:
+                # Get law number
+                law_num = await self._get_law_number(law_name, client)
+                if not law_num:
+                    continue
+
+                # Get law content
+                law_content = await self._get_law_content(law_num, client)
+                if law_content:
+                    # Store in cache
+                    self.law_content_cache.put(law_num, law_content)
+                    logger.debug(f"Prefetched {law_name} content")
+
+            except Exception as e:
+                logger.warning(f"Failed to prefetch {law_name}: {e}")
+
+    async def _get_law_number(self, law_name: str, client: httpx.AsyncClient) -> Optional[str]:
+        """Get law number with caching"""
+        cache_key = self.get_cache_key(law_name)
+
+        # Check cache first
+        cached_num = self.law_lookup_cache.get(cache_key)
+        if cached_num:
+            return cached_num
+
+        # Check direct mapping
+        if law_name in BASIC_LAWS:
+            law_num = BASIC_LAWS[law_name]
+            self.law_lookup_cache.put(cache_key, law_num)
+            return law_num
+
+        # API lookup
+        try:
+            response = await client.get("/laws", params={
+                "law_title": law_name,
+                "law_type": "Act",
+                "limit": 5
+            })
+            response.raise_for_status()
+
+            data = json.loads(response.text)
+            laws = data.get("laws", [])
+
+            if laws:
+                law_num = laws[0].get("law_info", {}).get("law_num")
+                if law_num:
+                    self.law_lookup_cache.put(cache_key, law_num)
+                    return law_num
+
+        except Exception as e:
+            logger.error(f"Failed to get law number for {law_name}: {e}")
+
+        return None
+
+    async def _get_law_content(self, law_num: str, client: httpx.AsyncClient) -> Optional[dict]:
+        """Get law content with caching"""
+        # Check cache first
+        cached_content = self.law_content_cache.get(law_num)
+        if cached_content:
+            return cached_content
+
+        try:
+            response = await client.get(f"/law_data/{law_num}", params={
+                "law_full_text_format": "xml"
+            })
+            response.raise_for_status()
+
+            data = json.loads(response.text)
+            self.law_content_cache.put(law_num, data)
+            return data
+
+        except Exception as e:
+            logger.error(f"Failed to get law content for {law_num}: {e}")
+
+        return None
+
+    async def batch_request_laws(self, law_names: list[str], client: httpx.AsyncClient) -> dict[str, str]:
+        """Batch request multiple law numbers"""
+        results = {}
+
+        # Separate cached and non-cached requests
+        cached_requests = []
+        api_requests = []
+
+        for law_name in law_names:
+            cache_key = self.get_cache_key(law_name)
+            cached_num = self.law_lookup_cache.get(cache_key)
+
+            if cached_num:
+                results[law_name] = cached_num
+                cached_requests.append(law_name)
+            else:
+                api_requests.append(law_name)
+
+        logger.info(f"Batch request: {len(cached_requests)} cached, {len(api_requests)} API requests")
+
+        # Process uncached requests
+        if api_requests:
+            # Group similar requests to reduce API calls
+            unique_requests = list(set(api_requests))
+
+            for law_name in unique_requests:
+                try:
+                    law_num = await self._get_law_number(law_name, client)
+                    if law_num:
+                        results[law_name] = law_num
+                        # Also cache for other identical requests
+                        for other_law in api_requests:
+                            if other_law == law_name:
+                                results[other_law] = law_num
+                except Exception as e:
+                    logger.error(f"Failed to get law number for {law_name} in batch: {e}")
+
+        return results
 
 # API configuration
 API_URL = os.environ.get("EGOV_API_URL", "https://laws.e-gov.go.jp/api/2")
@@ -48,7 +299,7 @@ mcp = FastMCP(
 class ConfigLoader:
     """
     Configuration loader for law mappings with backward compatibility.
-    
+
     Loads law aliases and basic laws from YAML configuration file.
     Falls back to hardcoded values for backward compatibility.
     """
@@ -56,14 +307,14 @@ class ConfigLoader:
     def __init__(self, config_path: Optional[str] = None):
         """
         Initialize ConfigLoader with optional custom config path.
-        
+
         Args:
             config_path: Path to YAML config file. If None, uses environment variable
                         LAW_CONFIG_PATH or defaults to config/laws.yaml
         """
         self.config_path = config_path or os.environ.get("LAW_CONFIG_PATH", "config/laws.yaml")
-        self._law_aliases: Optional[Dict[str, str]] = None
-        self._basic_laws: Optional[Dict[str, str]] = None
+        self._law_aliases: Optional[dict[str, str]] = None
+        self._basic_laws: Optional[dict[str, str]] = None
 
         # Fallback hardcoded values for backward compatibility
         self._fallback_law_aliases = {
@@ -113,7 +364,7 @@ class ConfigLoader:
             "特定受託事業者に係る取引の適正化等に関する法律": "令和五年法律第二十五号",
         }
 
-    def _load_config(self) -> Dict[str, Any]:
+    def _load_config(self) -> dict[str, Any]:
         """Load configuration from YAML file."""
         try:
             if os.path.exists(self.config_path):
@@ -130,7 +381,7 @@ class ConfigLoader:
             return {}
 
     @property
-    def law_aliases(self) -> Dict[str, str]:
+    def law_aliases(self) -> dict[str, str]:
         """Get law aliases mapping."""
         if self._law_aliases is None:
             config = self._load_config()
@@ -138,7 +389,7 @@ class ConfigLoader:
         return self._law_aliases
 
     @property
-    def basic_laws(self) -> Dict[str, str]:
+    def basic_laws(self) -> dict[str, str]:
         """Get basic laws mapping."""
         if self._basic_laws is None:
             config = self._load_config()
@@ -151,9 +402,10 @@ class ConfigLoader:
         self._basic_laws = None
         logger.info("Configuration reloaded")
 
-# Initialize global config loader and prompt loader
+# Initialize global config loader, prompt loader, and cache manager
 config_loader = ConfigLoader()
 prompt_loader = PromptLoader()
+cache_manager = CacheManager()
 
 # LAW ALIASES MAPPING (略称・通称から正式名称へ) - now loaded from config
 LAW_ALIASES = config_loader.law_aliases
@@ -237,7 +489,7 @@ def arabic_to_kanji(num_str: str) -> str:
 
     return num_str  # Fallback for large numbers
 
-def generate_search_patterns(article_input: str) -> List[str]:
+def generate_search_patterns(article_input: str) -> list[str]:
     """Generate comprehensive search patterns for article numbers."""
     # Extract main number and patterns
     main_match = re.search(r'(\d+)', article_input)
@@ -307,12 +559,22 @@ async def smart_law_lookup(law_name: str) -> Optional[str]:
         logger.info(f"Alias conversion: '{original_input}' -> '{formal_name}'")
         law_name_clean = formal_name
 
-    # Step 2: Check direct mapping with formal name
-    if law_name_clean in BASIC_LAWS:
-        logger.info(f"Direct mapping: {law_name_clean} -> {BASIC_LAWS[law_name_clean]}")
-        return BASIC_LAWS[law_name_clean]
+    # Step 2: Check cache first
+    cache_key = cache_manager.get_cache_key(law_name_clean)
+    cached_result = cache_manager.law_lookup_cache.get(cache_key)
+    if cached_result:
+        logger.info(f"Cache hit for law lookup: {law_name_clean} -> {cached_result}")
+        return cached_result
 
-    # Step 3: Intelligent search for unknown laws
+    # Step 3: Check direct mapping with formal name
+    if law_name_clean in BASIC_LAWS:
+        result = BASIC_LAWS[law_name_clean]
+        logger.info(f"Direct mapping: {law_name_clean} -> {result}")
+        # Cache the result
+        cache_manager.law_lookup_cache.put(cache_key, result)
+        return result
+
+    # Step 4: Intelligent search for unknown laws
     async with await get_http_client() as client:
         response = await client.get("/laws", params={
             "law_title": law_name_clean,
@@ -372,20 +634,25 @@ async def smart_law_lookup(law_name: str) -> Optional[str]:
         selected_law_title = best_law.get("law_info", {}).get("law_title")
 
         logger.info(f"Selected law: {selected_law_title} ({selected_law_num}) for search term '{law_name_clean}' (original: '{original_input}')")
+
+        # Cache the result
+        if selected_law_num:
+            cache_manager.law_lookup_cache.put(cache_key, selected_law_num)
+
         return selected_law_num
 
 @mcp.tool
 async def find_law_article(law_name: str, article_number: str) -> str:
     """
     Find a specific article in Japanese law (ULTRA SMART & FAST)
-    
+
     Supports 16+ major laws with direct mapping for instant access.
     Handles complex patterns like 条の2, 項, 号 automatically.
-    
+
     Args:
         law_name: Law name (e.g., "民法", "会社法", "憲法")
         article_number: Article number (e.g., "192", "325条の3", "第9条第2項")
-    
+
     Returns:
         JSON with found article content and legal analysis metadata
     """
@@ -395,6 +662,9 @@ async def find_law_article(law_name: str, article_number: str) -> str:
         return "Error: article_number is required"
 
     try:
+        # Cleanup cache if needed
+        cache_manager.cleanup_if_needed()
+
         # Step 1: Smart law lookup with formal name verification
         original_law_input = law_name
         formal_law_name = law_name
@@ -598,14 +868,14 @@ async def search_laws(
 ) -> str:
     """
     Search Japanese laws with smart filtering
-    
+
     Args:
         law_title: Law title (partial match)
         law_type: Law type (Act, CabinetOrder, etc.)
         law_num: Law number (partial match)
         limit: Maximum results (1-500)
         offset: Starting position
-    
+
     Returns:
         JSON with search results
     """
@@ -633,12 +903,12 @@ async def search_laws(
 async def search_laws_by_keyword(keyword: str, law_type: str = "", limit: int = 5) -> str:
     """
     Full-text keyword search in Japanese laws
-    
+
     Args:
         keyword: Search keyword (required)
         law_type: Law type filter (optional)
         limit: Maximum results (1-20)
-    
+
     Returns:
         JSON with search results
     """
@@ -663,16 +933,16 @@ async def search_laws_by_keyword(keyword: str, law_type: str = "", limit: int = 
 async def get_law_content(law_id: str = "", law_num: str = "", response_format: str = "json", elm: str = "") -> str:
     """
     Get law content (optimized per API spec with size limits)
-    
+
     Args:
         law_id: Law ID
         law_num: Law number
         response_format: "json" or "xml"
         elm: Element to retrieve (currently disabled due to API 400 errors)
-    
+
     Returns:
         Law content in specified format. For large laws (>800KB), returns summary with recommendation to use find_law_article for specific articles.
-        
+
     Note:
         - elm parameter is currently disabled due to e-Gov API 400 errors
         - Large laws like Company Law (会社法) will return a summary instead of full text
@@ -756,6 +1026,193 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
         logger.error(f"Get law content error: {e}")
         return f"Get Law Content Error: {str(e)}"
 
+@mcp.tool
+async def batch_find_articles(law_article_pairs: str) -> str:
+    """
+    Batch find multiple law articles efficiently
+
+    Args:
+        law_article_pairs: JSON string with law-article pairs, e.g. '[{"law":"民法","article":"192"},{"law":"憲法","article":"9"}]'
+
+    Returns:
+        JSON with batch results and performance stats
+    """
+    try:
+        pairs = json.loads(law_article_pairs)
+        if not isinstance(pairs, list):
+            return "Error: law_article_pairs must be a JSON array"
+
+        results = []
+        cache_hits = 0
+        api_calls = 0
+
+        async with await get_http_client() as client:
+            # Prefetch if cache is empty
+            if cache_manager.law_lookup_cache.size() == 0:
+                await cache_manager.prefetch_common_articles(client)
+
+            for pair in pairs:
+                if not isinstance(pair, dict) or "law" not in pair or "article" not in pair:
+                    results.append({"error": "Invalid pair format"})
+                    continue
+
+                law_name = pair["law"]
+                article_number = pair["article"]
+
+                # Check cache first
+                cache_key = cache_manager.get_cache_key(law_name, article_number)
+                cached_result = cache_manager.article_cache.get(cache_key)
+
+                if cached_result:
+                    results.append(cached_result)
+                    cache_hits += 1
+                else:
+                    # Call find_law_article
+                    result = await find_law_article(law_name, article_number)
+                    try:
+                        parsed_result = json.loads(result)
+                        results.append(parsed_result)
+                        # Cache the result
+                        cache_manager.article_cache.put(cache_key, parsed_result)
+                        api_calls += 1
+                    except json.JSONDecodeError:
+                        results.append({"error": result})
+                        api_calls += 1
+
+        return json.dumps({
+            "results": results,
+            "performance_stats": {
+                "total_requests": len(pairs),
+                "cache_hits": cache_hits,
+                "api_calls": api_calls,
+                "cache_hit_rate": f"{(cache_hits / len(pairs) * 100):.1f}%" if pairs else "0%"
+            }
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.error(f"Batch find articles error: {e}")
+        return f"Batch Find Articles Error: {str(e)}"
+
+@mcp.tool
+async def prefetch_common_laws() -> str:
+    """
+    Prefetch commonly accessed laws for better performance
+
+    Returns:
+        JSON with prefetch results and cache status
+    """
+    try:
+        async with await get_http_client() as client:
+            await cache_manager.prefetch_common_articles(client)
+
+            return json.dumps({
+                "status": "success",
+                "message": "Common laws prefetched successfully",
+                "cache_stats": {
+                    "law_lookup_cache_size": cache_manager.law_lookup_cache.size(),
+                    "law_content_cache_size": cache_manager.law_content_cache.size(),
+                    "article_cache_size": cache_manager.article_cache.size(),
+                    "memory_usage_mb": cache_manager.memory_monitor.get_memory_usage_mb()
+                }
+            }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.error(f"Prefetch common laws error: {e}")
+        return f"Prefetch Common Laws Error: {str(e)}"
+
+@mcp.tool
+async def get_cache_stats() -> str:
+    """
+    Get current cache statistics and performance metrics
+
+    Returns:
+        JSON with detailed cache statistics
+    """
+    try:
+        cache_manager.cleanup_if_needed()
+
+        return json.dumps({
+            "cache_statistics": {
+                "law_lookup_cache": {
+                    "size": cache_manager.law_lookup_cache.size(),
+                    "max_size": cache_manager.law_lookup_cache.max_size,
+                    "ttl_seconds": cache_manager.law_lookup_cache.ttl
+                },
+                "law_content_cache": {
+                    "size": cache_manager.law_content_cache.size(),
+                    "max_size": cache_manager.law_content_cache.max_size,
+                    "ttl_seconds": cache_manager.law_content_cache.ttl
+                },
+                "article_cache": {
+                    "size": cache_manager.article_cache.size(),
+                    "max_size": cache_manager.article_cache.max_size,
+                    "ttl_seconds": cache_manager.article_cache.ttl
+                }
+            },
+            "memory_monitoring": {
+                "current_usage_mb": cache_manager.memory_monitor.get_memory_usage_mb(),
+                "max_memory_mb": cache_manager.memory_monitor.max_memory_mb,
+                "memory_limit_exceeded": cache_manager.memory_monitor.is_memory_limit_exceeded()
+            },
+            "performance_features": [
+                "🚀 LRU caching with TTL support",
+                "💾 Memory-aware cache management",
+                "⚡ Batch request optimization",
+                "🔄 Automatic prefetching of common articles",
+                "📊 Real-time cache statistics"
+            ]
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.error(f"Get cache stats error: {e}")
+        return f"Get Cache Stats Error: {str(e)}"
+
+@mcp.tool
+async def clear_cache(cache_type: str = "all") -> str:
+    """
+    Clear specified cache or all caches
+
+    Args:
+        cache_type: Cache type to clear ("all", "law_lookup", "law_content", "article")
+
+    Returns:
+        JSON with clear operation results
+    """
+    try:
+        if cache_type == "all":
+            cache_manager.law_lookup_cache.clear()
+            cache_manager.law_content_cache.clear()
+            cache_manager.article_cache.clear()
+            message = "All caches cleared successfully"
+        elif cache_type == "law_lookup":
+            cache_manager.law_lookup_cache.clear()
+            message = "Law lookup cache cleared successfully"
+        elif cache_type == "law_content":
+            cache_manager.law_content_cache.clear()
+            message = "Law content cache cleared successfully"
+        elif cache_type == "article":
+            cache_manager.article_cache.clear()
+            message = "Article cache cleared successfully"
+        else:
+            return json.dumps({
+                "status": "error",
+                "message": f"Invalid cache_type: {cache_type}. Use 'all', 'law_lookup', 'law_content', or 'article'"
+            }, ensure_ascii=False, indent=2)
+
+        return json.dumps({
+            "status": "success",
+            "message": message,
+            "cache_stats_after_clear": {
+                "law_lookup_cache_size": cache_manager.law_lookup_cache.size(),
+                "law_content_cache_size": cache_manager.law_content_cache.size(),
+                "article_cache_size": cache_manager.article_cache.size()
+            }
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.error(f"Clear cache error: {e}")
+        return f"Clear Cache Error: {str(e)}"
+
 # Resources
 @mcp.resource("api://info")
 def get_api_info() -> dict:
@@ -770,7 +1227,11 @@ def get_api_info() -> dict:
             "🧠 Smart XML/Base64 text extraction",
             "⚡ Efficient pattern matching for complex articles (条の2, 項, 号)",
             "📊 Intelligent law selection with era-based scoring",
-            "🔍 Full-text keyword search with smart filtering"
+            "🔍 Full-text keyword search with smart filtering",
+            "💾 Advanced LRU caching with TTL support",
+            "🔄 Automatic prefetching of common articles",
+            "📈 Batch request optimization",
+            "🎯 Memory-aware cache management"
         ],
         "basic_laws_supported": len(BASIC_LAWS),
         "optimization": "Reduced from 1000+ to <500 lines while adding functionality",

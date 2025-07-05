@@ -7,7 +7,6 @@ separating prompt content from business logic.
 
 import logging
 from pathlib import Path
-from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +14,7 @@ logger = logging.getLogger(__name__)
 class PromptLoader:
     """
     A class to load prompts from external files.
-    
+
     This allows for better maintainability and separation of concerns
     by keeping prompt templates separate from the main application logic.
     """
@@ -23,12 +22,12 @@ class PromptLoader:
     def __init__(self, prompts_dir: str = "prompts"):
         """
         Initialize the PromptLoader.
-        
+
         Args:
             prompts_dir: Directory containing prompt files (default: "prompts")
         """
         self.prompts_dir = Path(prompts_dir)
-        self._cache: Dict[str, str] = {}
+        self._cache: dict[str, str] = {}
 
         # Ensure prompts directory exists
         if not self.prompts_dir.exists():
@@ -37,13 +36,13 @@ class PromptLoader:
     def load_prompt(self, prompt_name: str) -> str:
         """
         Load a prompt from a file.
-        
+
         Args:
             prompt_name: Name of the prompt file (without extension)
-            
+
         Returns:
             The prompt content as a string
-            
+
         Raises:
             FileNotFoundError: If the prompt file doesn't exist
             IOError: If there's an error reading the file
@@ -75,7 +74,7 @@ class PromptLoader:
     def get_legal_analysis_instruction(self) -> str:
         """
         Get the legal analysis instruction prompt.
-        
+
         Returns:
             The legal analysis instruction as a string
         """
@@ -89,7 +88,7 @@ class PromptLoader:
     def _get_fallback_legal_analysis_instruction(self) -> str:
         """
         Fallback legal analysis instruction for backward compatibility.
-        
+
         Returns:
             The hardcoded legal analysis instruction
         """
@@ -129,7 +128,7 @@ class PromptLoader:
     def list_available_prompts(self) -> list:
         """
         List available prompt files.
-        
+
         Returns:
             List of available prompt names (without extensions)
         """
