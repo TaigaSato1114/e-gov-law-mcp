@@ -1,8 +1,8 @@
 # e-Gov Law MCP Server クイックスタートガイド
 
-## 最速セットアップ（15秒で完了）
+## 🚨 重要：OS別セットアップ
 
-### FastMCP設定（最も簡単）
+### 📋 Linux/macOS環境
 
 ```bash
 # 1. リポジトリをクローン
@@ -13,7 +13,41 @@ cd e-gov-law-mcp
 uvx fastmcp install src/mcp_server.py:mcp -n "e-Gov Law Server"
 ```
 
-**それだけです！** 自動的にClaude Desktopの設定が追加されます。
+### 🪟 Windows環境（⚠️ FastMCPインストール非対応）
+
+**Windows環境ではFastMCPのインストールコマンドは動作しません。** 手動設定が必要です。
+
+```bash
+# 1. リポジトリをクローン  
+git clone https://github.com/ryoooo/e-gov-law-mcp.git
+cd e-gov-law-mcp
+
+# 2. 依存関係をインストール
+uv sync
+
+# 3. Claude Desktop設定を手動で追加
+# %APPDATA%\Claude\claude_desktop_config.json
+```
+
+**Windows用設定内容**:
+```json
+{
+  "mcpServers": {
+    "e-gov-law": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "C:\\Users\\[ユーザー名]\\path\\to\\e-gov-law-mcp",
+        "python",
+        "run_server.py"
+      ]
+    }
+  }
+}
+```
+
+> **💡 ポイント**: Windows環境では `run_server.py` を使用することで、依存関係チェック機能が動作します。
 
 ## 使い方
 
@@ -38,17 +72,19 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 pip install uv
 ```
 
-### Windows環境の場合
+### Windows環境でuvがインストールされていない場合
 
 PowerShellで実行：
 ```powershell
 # uvのインストール
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# e-Gov Lawサーバーの設定
-uvx fastmcp install github:ryoooo/e-gov-law-mcp -n "e-Gov Law Server"
+# ⚠️ 注意: Windows環境では uvx fastmcp install は動作しません
+# 上記の手動設定方法を使用してください
 ```
 
-### 詳細な設定方法
+### 📝 詳細な設定方法
 
-より詳しい設定方法は[README.md](README.md)を参照してください。
+- **Windowsユーザー**: [WINDOWS_SETUP.md](WINDOWS_SETUP.md) を参照
+- **一般的な設定**: [README.md](README.md) を参照
+- **トラブルシューティング**: [WSL_TROUBLESHOOTING.md](WSL_TROUBLESHOOTING.md) を参照
