@@ -27,6 +27,7 @@ requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=2.8.1",
     "httpx>=0.24.0",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -124,4 +125,5 @@ dev = [
     "pytest>=8.4.1",
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=6.2.1",
+    "ruff>=0.12.0",
 ]
