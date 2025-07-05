@@ -72,12 +72,7 @@ You should see initialization messages without the "No module named 'yaml'" erro
 
 ## 🔧 Alternative Solutions
 
-### Option A: Use Automated Install Script
-
-1. Download and run `install_windows.bat` from the project root
-2. It will automatically install dependencies and show you the correct configuration
-
-### Option B: Manual pip installation
+### Manual pip installation
 
 If uv is causing issues:
 

@@ -102,20 +102,6 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 ### インストール
 
-**方法1: FastMCP CLI（推奨）**
-```bash
-# リポジトリをクローン
-git clone https://github.com/ryoooo/e-gov-law-mcp.git
-cd e-gov-law-mcp
-
-# 依存関係をインストール
-uv sync
-
-# FastMCP CLIで自動設定
-uvx fastmcp install src/mcp_server.py:mcp -n "e-Gov Law Server"
-```
-
-**方法2: 手動インストール（Windows推奨）**
 ```bash
 # リポジトリをクローン
 git clone https://github.com/ryoooo/e-gov-law-mcp.git
@@ -135,25 +121,7 @@ uv add psutil
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Linux**: `~/.config/claude/claude_desktop_config.json`
 
-**Windows設定例**:
-```json
-{
-  "mcpServers": {
-    "e-gov-law": {
-      "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "C:\\path\\to\\e-gov-law-mcp",
-        "python",
-        "run_server.py"
-      ]
-    }
-  }
-}
-```
-
-**Linux/macOS設定例**:
+**設定例**:
 ```json
 {
   "mcpServers": {
