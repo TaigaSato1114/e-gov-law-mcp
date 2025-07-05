@@ -26,6 +26,11 @@ import httpx
 import yaml
 from fastmcp import FastMCP
 
+try:
+    from .prompt_loader import PromptLoader
+except ImportError:
+    from prompt_loader import PromptLoader
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -146,8 +151,9 @@ class ConfigLoader:
         self._basic_laws = None
         logger.info("Configuration reloaded")
 
-# Initialize global config loader
+# Initialize global config loader and prompt loader
 config_loader = ConfigLoader()
+prompt_loader = PromptLoader()
 
 # LAW ALIASES MAPPING (略称・通称から正式名称へ) - now loaded from config
 LAW_ALIASES = config_loader.law_aliases
@@ -551,7 +557,7 @@ async def find_law_article(law_name: str, article_number: str) -> str:
                 "matches_found": len(matches),
                 "articles": matches[:3] if matches else [],
                 "note": f"Searched for article '{article_number}' in '{actual_law_title}'{' (converted from: ' + original_law_input + ')' if name_conversion_applied else ''}",
-                "legal_analysis_instruction": "【重要】日本法の専門家として、本条文について以下の体系に従い法的分析を行ってください：\n\n■ 0. 検索対象法令の確認（必須）\n検索結果の「actual_law_title」と「law_number」を確認し、正確な法令で検索されたことを明記してください。\n「name_conversion_applied」がtrueの場合は、略称から正式名称への変換が行われたことも説明してください。\n\n例：\n「民法（明治二十九年法律第八十九号）第百九十二条について法的分析を行います。」\n「労基法として検索されましたが、正式名称は労働基準法（昭和二十二年法律第四十九号）です。」\n\n■ 1. 条文の正確な全文引用（必須）\n検索結果の「articles」に含まれる条文テキストを、一字一句正確に引用してください。条文番号、項、号まで含めて完全に表示してください。\n\n例：\n「第百九十二条　取引行為によって、平穏に、かつ、公然と動産の占有を始めた者は、善意であり、かつ、過失がないときは、即時にその動産について行使する権利を取得する。」\n\n■ 2. 法的分析（条文規定を引用しながら詳述）\n上記で引用した条文の重要な文言を「」で再度引用しながら、以下の観点から体系的に分析してください：\n・条文の趣旨（立法目的・沿革・保護法益）\n・適用要件（成立要件・消極的要件・主観的要件・客観的要件）\n・法的効果（権利の得喪変更、義務の発生・変更・消滅、その他の法律関係の変動）\n・実務上の留意点・関連判例・通説的見解\n・他の条文との関係性（準用・類推適用・特別法と一般法の関係を含む）\n\n例：「取引行為によって」という客観的要件は有償取引を前提とし、「善意であり、かつ、過失がない」という主観的要件を示します。これらの要件を充足した場合、「即時にその動産について行使する権利を取得する」という権利取得の法的効果が発生し、元の権利者は所有権を失う（権利の変動）という法律関係の変動が生じます。\n\n正式法令名の確認、条文規定の正確な引用、体系的な法的分析を組み合わせた専門的で実用的な回答をお願いします。"
+                "legal_analysis_instruction": prompt_loader.get_legal_analysis_instruction()
             }
 
             if not matches:
