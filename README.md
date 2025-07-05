@@ -102,13 +102,30 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 ### インストール
 
+**方法1: FastMCP CLI（推奨）**
 ```bash
 # リポジトリをクローン
 git clone https://github.com/ryoooo/e-gov-law-mcp.git
 cd e-gov-law-mcp
 
-# FastMCP CLIで自動設定（推奨）
+# 依存関係をインストール
+uv sync
+
+# FastMCP CLIで自動設定
 uvx fastmcp install src/mcp_server.py:mcp -n "e-Gov Law Server"
+```
+
+**方法2: 手動インストール（Windows推奨）**
+```bash
+# リポジトリをクローン
+git clone https://github.com/ryoooo/e-gov-law-mcp.git
+cd e-gov-law-mcp
+
+# 依存関係をインストール
+uv sync
+
+# パフォーマンス監視を有効にする場合（オプション）
+uv add psutil
 ```
 
 ### Claude Desktop設定
@@ -118,6 +135,25 @@ uvx fastmcp install src/mcp_server.py:mcp -n "e-Gov Law Server"
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Linux**: `~/.config/claude/claude_desktop_config.json`
 
+**Windows設定例**:
+```json
+{
+  "mcpServers": {
+    "e-gov-law": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "C:\\path\\to\\e-gov-law-mcp",
+        "python",
+        "run_server.py"
+      ]
+    }
+  }
+}
+```
+
+**Linux/macOS設定例**:
 ```json
 {
   "mcpServers": {
@@ -128,7 +164,7 @@ uvx fastmcp install src/mcp_server.py:mcp -n "e-Gov Law Server"
         "--directory",
         "/path/to/e-gov-law-mcp",
         "python",
-        "src/mcp_server.py"
+        "run_server.py"
       ]
     }
   }
@@ -276,16 +312,48 @@ await client.call_tool("batch_find_articles", {
 
 ## 🔧 トラブルシューティング
 
-### Windows環境
+### Windows環境トラブルシューティング
+
+**問題: "No module named 'yaml'" エラー**
 ```bash
-# psutilがない場合（Windows環境で多い）
-# → 自動的にフォールバック、メモリ監視は無効化
+# 解決方法1: uv syncで依存関係をインストール
+cd C:\path\to\e-gov-law-mcp
+uv sync
 
-# パス区切り文字問題
-# → pathlib使用により自動解決
+# 解決方法2: 手動インストール
+pip install PyYAML httpx fastmcp
+```
 
-# UTF-8エンコーディング
-# → ファイル読み込み時に明示的指定
+**問題: "No module named 'psutil'" 警告**
+```bash
+# psutilはオプションのパフォーマンス監視ライブラリ
+# インストールしなくても動作します
+
+# パフォーマンス監視を有効にしたい場合
+uv add psutil
+# または
+pip install psutil
+```
+
+**問題: FastMCPコマンドエラー**
+```bash
+# Claude Desktop設定でrun_server.pyを使用
+# 依存関係チェック機能付き
+"command": "uv",
+"args": [
+  "run",
+  "--directory",
+  "C:\\path\\to\\e-gov-law-mcp",
+  "python",
+  "run_server.py"
+]
+```
+
+**その他のWindows問題**
+```bash
+# パス区切り文字 → pathlibで自動解決
+# UTF-8エンコーディング → 明示的指定済み
+# メモリ監視 → psutilなしでも動作
 ```
 
 ### パフォーマンス最適化
