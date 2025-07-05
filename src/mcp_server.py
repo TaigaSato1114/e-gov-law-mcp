@@ -20,9 +20,10 @@ import logging
 import os
 import re
 import xml.etree.ElementTree as ET
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
+import yaml
 from fastmcp import FastMCP
 
 # Configure logging
@@ -39,54 +40,120 @@ mcp = FastMCP(
     on_duplicate_tools="warn"
 )
 
-# LAW ALIASES MAPPING (略称・通称から正式名称へ)
-LAW_ALIASES = {
-    # 一般的な略称
-    "道交法": "道路交通法",
-    "労基法": "労働基準法",
-    "独禁法": "独占禁止法",
-    "消契法": "消費者契約法",
-    "著作権": "著作権法",
-    "特許": "特許法",
-    "建基法": "建築基準法",
+class ConfigLoader:
+    """
+    Configuration loader for law mappings with backward compatibility.
+    
+    Loads law aliases and basic laws from YAML configuration file.
+    Falls back to hardcoded values for backward compatibility.
+    """
 
-    # 分野別検索
-    "税法": "所得税法",  # デフォルトで所得税法を選択
-    "労働法": "労働基準法",
-    "知財法": "著作権法",
-    "交通法": "道路交通法",
+    def __init__(self, config_path: Optional[str] = None):
+        """
+        Initialize ConfigLoader with optional custom config path.
+        
+        Args:
+            config_path: Path to YAML config file. If None, uses environment variable
+                        LAW_CONFIG_PATH or defaults to config/laws.yaml
+        """
+        self.config_path = config_path or os.environ.get("LAW_CONFIG_PATH", "config/laws.yaml")
+        self._law_aliases: Optional[Dict[str, str]] = None
+        self._basic_laws: Optional[Dict[str, str]] = None
 
-    # 一般的な呼び方
-    "会社": "会社法",
-    "民事": "民法",
-    "刑事": "刑法",
-    "訴訟": "民事訴訟法",
-}
+        # Fallback hardcoded values for backward compatibility
+        self._fallback_law_aliases = {
+            # 一般的な略称
+            "道交法": "道路交通法",
+            "労基法": "労働基準法",
+            "独禁法": "独占禁止法",
+            "消契法": "消費者契約法",
+            "著作権": "著作権法",
+            "特許": "特許法",
+            "建基法": "建築基準法",
 
-# COMPREHENSIVE BASIC LAWS MAPPING (16 major laws)
-BASIC_LAWS = {
-    # 六法 (Six Codes)
-    "民法": "明治二十九年法律第八十九号",
-    "憲法": "昭和二十一年憲法",
-    "日本国憲法": "昭和二十一年憲法",
-    "刑法": "明治四十年法律第四十五号",
-    "商法": "昭和二十三年法律第二十五号",
-    "民事訴訟法": "平成八年法律第百九号",
-    "刑事訴訟法": "昭和二十三年法律第百三十一号",
+            # 分野別検索
+            "税法": "所得税法",
+            "労働法": "労働基準法",
+            "知財法": "著作権法",
+            "交通法": "道路交通法",
 
-    # 現代重要法 (Modern Key Laws)
-    "会社法": "平成十七年法律第八十六号",
-    "労働基準法": "昭和二十二年法律第四十九号",
-    "所得税法": "昭和四十年法律第三十三号",
-    "法人税法": "昭和四十年法律第三十四号",
-    "著作権法": "昭和四十五年法律第四十八号",
-    "特許法": "昭和三十四年法律第百二十一号",
-    "道路交通法": "昭和三十五年法律第百五号",
-    "建築基準法": "昭和二十五年法律第二百一号",
-    "独占禁止法": "昭和二十二年法律第五十四号",
-    "消費者契約法": "平成十二年法律第六十一号",
-    "特定受託事業者に係る取引の適正化等に関する法律": "令和五年法律第二十五号",
-}
+            # 一般的な呼び方
+            "会社": "会社法",
+            "民事": "民法",
+            "刑事": "刑法",
+            "訴訟": "民事訴訟法",
+        }
+
+        self._fallback_basic_laws = {
+            # 六法 (Six Codes)
+            "民法": "明治二十九年法律第八十九号",
+            "憲法": "昭和二十一年憲法",
+            "日本国憲法": "昭和二十一年憲法",
+            "刑法": "明治四十年法律第四十五号",
+            "商法": "昭和二十三年法律第二十五号",
+            "民事訴訟法": "平成八年法律第百九号",
+            "刑事訴訟法": "昭和二十三年法律第百三十一号",
+
+            # 現代重要法 (Modern Key Laws)
+            "会社法": "平成十七年法律第八十六号",
+            "労働基準法": "昭和二十二年法律第四十九号",
+            "所得税法": "昭和四十年法律第三十三号",
+            "法人税法": "昭和四十年法律第三十四号",
+            "著作権法": "昭和四十五年法律第四十八号",
+            "特許法": "昭和三十四年法律第百二十一号",
+            "道路交通法": "昭和三十五年法律第百五号",
+            "建築基準法": "昭和二十五年法律第二百一号",
+            "独占禁止法": "昭和二十二年法律第五十四号",
+            "消費者契約法": "平成十二年法律第六十一号",
+            "特定受託事業者に係る取引の適正化等に関する法律": "令和五年法律第二十五号",
+        }
+
+    def _load_config(self) -> Dict[str, Any]:
+        """Load configuration from YAML file."""
+        try:
+            if os.path.exists(self.config_path):
+                with open(self.config_path, encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                    logger.info(f"Loaded configuration from {self.config_path}")
+                    return config or {}
+            else:
+                logger.warning(f"Config file not found at {self.config_path}, using fallback values")
+                return {}
+        except Exception as e:
+            logger.error(f"Failed to load config from {self.config_path}: {e}")
+            logger.info("Using fallback values for backward compatibility")
+            return {}
+
+    @property
+    def law_aliases(self) -> Dict[str, str]:
+        """Get law aliases mapping."""
+        if self._law_aliases is None:
+            config = self._load_config()
+            self._law_aliases = config.get('law_aliases', self._fallback_law_aliases)
+        return self._law_aliases
+
+    @property
+    def basic_laws(self) -> Dict[str, str]:
+        """Get basic laws mapping."""
+        if self._basic_laws is None:
+            config = self._load_config()
+            self._basic_laws = config.get('basic_laws', self._fallback_basic_laws)
+        return self._basic_laws
+
+    def reload_config(self) -> None:
+        """Reload configuration from file."""
+        self._law_aliases = None
+        self._basic_laws = None
+        logger.info("Configuration reloaded")
+
+# Initialize global config loader
+config_loader = ConfigLoader()
+
+# LAW ALIASES MAPPING (略称・通称から正式名称へ) - now loaded from config
+LAW_ALIASES = config_loader.law_aliases
+
+# COMPREHENSIVE BASIC LAWS MAPPING (16 major laws) - now loaded from config
+BASIC_LAWS = config_loader.basic_laws
 
 async def get_http_client() -> httpx.AsyncClient:
     """Create HTTP client for e-Gov API."""
