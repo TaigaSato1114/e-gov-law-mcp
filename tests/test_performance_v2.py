@@ -136,13 +136,13 @@ class TestPerformanceV2:
             # 成功率確認
             success_count = 0
             for _, result in results:
-                if "Error:" not in result[0].text:
-                    try:
-                        data = json.loads(result[0].text)
-                        if data.get("matches_found", 0) > 0:
-                            success_count += 1
-                    except:
-                        pass
+                try:
+                    data = json.loads(result[0].text)
+                    if data.get("matches_found", 0) > 0:
+                        success_count += 1
+                except (json.JSONDecodeError, KeyError):
+                    # JSON decodeできない、または期待したキーがない場合はスキップ
+                    pass
             
             success_rate = success_count / len(results) * 100
             assert success_rate >= 80.0, f"並行実行時の成功率が低すぎます: {success_rate:.1f}%"
@@ -223,13 +223,13 @@ class TestScalabilityV2:
                 end_time = time.time()
                 total_time += (end_time - start_time)
                 
-                if "Error:" not in result[0].text:
-                    try:
-                        data = json.loads(result[0].text)
-                        if data.get("matches_found", 0) > 0:
-                            success_count += 1
-                    except:
-                        pass
+                try:
+                    data = json.loads(result[0].text)
+                    if data.get("matches_found", 0) > 0:
+                        success_count += 1
+                except (json.JSONDecodeError, KeyError):
+                    # JSON decodeできない、または期待したキーがない場合はスキップ
+                    pass
             
             avg_time = total_time / len(all_basic_laws[:10])
             success_rate = success_count / len(all_basic_laws[:10]) * 100
@@ -253,22 +253,29 @@ class TestScalabilityV2:
             
             total_time = 0
             
+            error_count = 0
+            
             for law_name, article in error_tests:
                 start_time = time.time()
                 
-                result = await client.call_tool("find_law_article", {
-                    "law_name": law_name,
-                    "article_number": article
-                })
+                try:
+                    await client.call_tool("find_law_article", {
+                        "law_name": law_name,
+                        "article_number": article
+                    })
+                except Exception:  # ToolError or other exceptions
+                    # エラーが適切に投げられたことを確認
+                    error_count += 1
                 
                 end_time = time.time()
                 total_time += (end_time - start_time)
-                
-                # エラーが適切に処理されることを確認
-                assert "Error:" in result[0].text
             
             avg_error_time = total_time / len(error_tests)
             print(f"エラー処理平均時間: {avg_error_time:.2f}秒")
+            print(f"エラー数: {error_count}/{len(error_tests)}")
+            
+            # エラーが適切に処理されることを確認
+            assert error_count == len(error_tests), f"エラーが適切に処理されていません: {error_count}/{len(error_tests)}"
             
             # エラー処理は高速であるべき（3秒以内）
             assert avg_error_time < 3.0, f"エラー処理が遅すぎます: {avg_error_time:.2f}秒"

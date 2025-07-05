@@ -23,12 +23,20 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-import psutil
 import yaml
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
+from fastmcp.exceptions import ToolError, ResourceError
+
+# Optional import for performance monitoring
+try:
+    import psutil
+    PERFORMANCE_MONITORING_AVAILABLE = True
+except ImportError:
+    PERFORMANCE_MONITORING_AVAILABLE = False
 
 try:
     from .prompt_loader import PromptLoader
@@ -38,6 +46,10 @@ except ImportError:
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Log psutil availability
+if not PERFORMANCE_MONITORING_AVAILABLE:
+    logger.warning("psutil not available - memory monitoring disabled. Install with: pip install psutil")
 
 # Performance optimization classes
 class LRUCache:
@@ -109,14 +121,21 @@ class MemoryMonitor:
 
     def __init__(self, max_memory_mb: int = 512):
         self.max_memory_mb = max_memory_mb
-        self.process = psutil.Process()
+        if PERFORMANCE_MONITORING_AVAILABLE:
+            self.process = psutil.Process()
+        else:
+            self.process = None
 
     def get_memory_usage_mb(self) -> float:
         """Get current memory usage in MB"""
-        return self.process.memory_info().rss / 1024 / 1024
+        if PERFORMANCE_MONITORING_AVAILABLE and self.process:
+            return self.process.memory_info().rss / 1024 / 1024
+        return 0.0  # Return 0 if psutil not available
 
     def is_memory_limit_exceeded(self) -> bool:
         """Check if memory limit is exceeded"""
+        if not PERFORMANCE_MONITORING_AVAILABLE:
+            return False  # Never exceed limit if monitoring disabled
         return self.get_memory_usage_mb() > self.max_memory_mb
 
 class CacheManager:
@@ -290,10 +309,13 @@ class CacheManager:
 API_URL = os.environ.get("EGOV_API_URL", "https://laws.e-gov.go.jp/api/2")
 API_TOKEN = os.environ.get("EGOV_API_TOKEN", "")
 
-# Create MCP server
+# Create MCP server with Windows-compatible configuration
 mcp = FastMCP(
     name=os.environ.get("MCP_SERVER_NAME", "e-Gov Law API Server v2"),
-    on_duplicate_tools="warn"
+    mask_error_details=True,  # Security: mask internal error details
+    on_duplicate_tools="warn",
+    on_duplicate_resources="warn",
+    on_duplicate_prompts="warn"
 )
 
 class ConfigLoader:
@@ -312,7 +334,15 @@ class ConfigLoader:
             config_path: Path to YAML config file. If None, uses environment variable
                         LAW_CONFIG_PATH or defaults to config/laws.yaml
         """
-        self.config_path = config_path or os.environ.get("LAW_CONFIG_PATH", "config/laws.yaml")
+        # Windows-compatible path handling
+        default_config = Path("config") / "laws.yaml"
+        config_env = os.environ.get("LAW_CONFIG_PATH")
+        if config_env:
+            self.config_path = Path(config_env)
+        elif config_path:
+            self.config_path = Path(config_path)
+        else:
+            self.config_path = default_config
         self._law_aliases: Optional[dict[str, str]] = None
         self._basic_laws: Optional[dict[str, str]] = None
 
@@ -365,10 +395,11 @@ class ConfigLoader:
         }
 
     def _load_config(self) -> dict[str, Any]:
-        """Load configuration from YAML file."""
+        """Load configuration from YAML file with Windows support."""
         try:
-            if os.path.exists(self.config_path):
-                with open(self.config_path, encoding='utf-8') as f:
+            if self.config_path.exists():
+                # Windows-compatible UTF-8 file reading
+                with open(self.config_path, encoding='utf-8', newline='') as f:
                     config = yaml.safe_load(f)
                     logger.info(f"Loaded configuration from {self.config_path}")
                     return config or {}
@@ -642,7 +673,7 @@ async def smart_law_lookup(law_name: str) -> Optional[str]:
         return selected_law_num
 
 @mcp.tool
-async def find_law_article(law_name: str, article_number: str) -> str:
+async def find_law_article(law_name: str, article_number: str, ctx: Context) -> dict:
     """
     Find a specific article in Japanese law (ULTRA SMART & FAST)
 
@@ -652,16 +683,20 @@ async def find_law_article(law_name: str, article_number: str) -> str:
     Args:
         law_name: Law name (e.g., "民法", "会社法", "憲法")
         article_number: Article number (e.g., "192", "325条の3", "第9条第2項")
+        ctx: FastMCP context for logging and progress reporting
 
     Returns:
-        JSON with found article content and legal analysis metadata
+        Dict with found article content and legal analysis metadata
     """
     if not law_name or not law_name.strip():
-        return "Error: law_name is required"
+        raise ToolError("law_name is required")
     if not article_number or not article_number.strip():
-        return "Error: article_number is required"
+        raise ToolError("article_number is required")
 
     try:
+        # Log the search request
+        await ctx.info(f"Searching for article {article_number} in {law_name}")
+        
         # Cleanup cache if needed
         cache_manager.cleanup_if_needed()
 
@@ -674,10 +709,12 @@ async def find_law_article(law_name: str, article_number: str) -> str:
         if law_name.strip() in LAW_ALIASES:
             formal_law_name = LAW_ALIASES[law_name.strip()]
             name_conversion_applied = True
+            await ctx.debug(f"Alias conversion: {law_name} → {formal_law_name}")
 
         law_num = await smart_law_lookup(law_name)
         if not law_num:
-            return f"Error: Law '{law_name}' not found"
+            await ctx.error(f"Law '{law_name}' not found")
+            raise ToolError(f"Law '{law_name}' not found")
 
         # Step 2: Get law text with XML format
         async with await get_http_client() as client:
@@ -852,11 +889,16 @@ async def find_law_article(law_name: str, article_number: str) -> str:
 
                 result["search_patterns_used"] = patterns[:5]
 
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            await ctx.info(f"Successfully found article {article_number} in {result.get('actual_law_title', law_name)}")
+            return result
 
+    except ToolError:
+        # Re-raise ToolError to send proper error to client
+        raise
     except Exception as e:
         logger.error(f"Find law article error: {e}")
-        return f"Find Law Article Error: {str(e)}"
+        await ctx.error(f"Search failed: {str(e)}")
+        raise ToolError(f"Search failed: {str(e)}")
 
 @mcp.tool
 async def search_laws(
@@ -864,8 +906,9 @@ async def search_laws(
     law_type: str = "",
     law_num: str = "",
     limit: int = 10,
-    offset: int = 0
-) -> str:
+    offset: int = 0,
+    ctx: Context = None
+) -> dict:
     """
     Search Japanese laws with smart filtering
 
@@ -875,15 +918,19 @@ async def search_laws(
         law_num: Law number (partial match)
         limit: Maximum results (1-500)
         offset: Starting position
+        ctx: FastMCP context for logging
 
     Returns:
-        JSON with search results
+        Dict with search results
     """
     # Input validation
     if limit < 1 or limit > 500:
-        return "Error: limit must be between 1 and 500"
+        raise ToolError("limit must be between 1 and 500")
     if offset < 0:
-        return "Error: offset must be 0 or greater"
+        raise ToolError("offset must be 0 or greater")
+    
+    if ctx:
+        await ctx.info(f"Searching laws with title='{law_title}', type='{law_type}', limit={limit}")
 
     params = {"limit": limit, "offset": offset}
     if law_title: params["law_title"] = law_title
@@ -894,13 +941,21 @@ async def search_laws(
         async with await get_http_client() as client:
             response = await client.get("/laws", params=params)
             response.raise_for_status()
-            return response.text
+            
+            # Parse JSON and return dict for FastMCP auto-serialization
+            result = json.loads(response.text)
+            if ctx:
+                law_count = len(result.get("laws", []))
+                await ctx.info(f"Found {law_count} laws matching search criteria")
+            return result
     except Exception as e:
         logger.error(f"Search laws error: {e}")
-        return f"Search Laws Error: {str(e)}"
+        if ctx:
+            await ctx.error(f"Search failed: {str(e)}")
+        raise ToolError(f"Search failed: {str(e)}")
 
 @mcp.tool
-async def search_laws_by_keyword(keyword: str, law_type: str = "", limit: int = 5) -> str:
+async def search_laws_by_keyword(keyword: str, law_type: str = "", limit: int = 5, ctx: Context = None) -> dict:
     """
     Full-text keyword search in Japanese laws
 
@@ -908,14 +963,18 @@ async def search_laws_by_keyword(keyword: str, law_type: str = "", limit: int = 
         keyword: Search keyword (required)
         law_type: Law type filter (optional)
         limit: Maximum results (1-20)
+        ctx: FastMCP context for logging
 
     Returns:
-        JSON with search results
+        Dict with search results
     """
     if not keyword or not keyword.strip():
-        return "Error: keyword is required"
+        raise ToolError("keyword is required")
     if limit < 1 or limit > 20:
-        return "Error: limit must be between 1 and 20"
+        raise ToolError("limit must be between 1 and 20")
+    
+    if ctx:
+        await ctx.info(f"Searching for keyword: '{keyword}' with limit={limit}")
 
     params = {"keyword": keyword.strip(), "limit": limit}
     if law_type: params["law_type"] = law_type
@@ -924,13 +983,21 @@ async def search_laws_by_keyword(keyword: str, law_type: str = "", limit: int = 
         async with await get_http_client() as client:
             response = await client.get("/keyword", params=params)
             response.raise_for_status()
-            return response.text
+            
+            # Parse JSON and return dict for FastMCP auto-serialization
+            result = json.loads(response.text)
+            if ctx:
+                result_count = len(result.get("laws", []))
+                await ctx.info(f"Found {result_count} laws containing keyword '{keyword}'")
+            return result
     except Exception as e:
         logger.error(f"Keyword search error: {e}")
-        return f"Keyword Search Error: {str(e)}"
+        if ctx:
+            await ctx.error(f"Keyword search failed: {str(e)}")
+        raise ToolError(f"Keyword search failed: {str(e)}")
 
 @mcp.tool
-async def get_law_content(law_id: str = "", law_num: str = "", response_format: str = "json", elm: str = "") -> str:
+async def get_law_content(law_id: str = "", law_num: str = "", response_format: str = "json", elm: str = "", ctx: Context = None) -> dict:
     """
     Get law content (optimized per API spec with size limits)
 
@@ -939,9 +1006,10 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
         law_num: Law number
         response_format: "json" or "xml"
         elm: Element to retrieve (currently disabled due to API 400 errors)
+        ctx: FastMCP context for logging
 
     Returns:
-        Law content in specified format. For large laws (>800KB), returns summary with recommendation to use find_law_article for specific articles.
+        Dict with law content. For large laws (>800KB), returns summary with recommendation to use find_law_article for specific articles.
 
     Note:
         - elm parameter is currently disabled due to e-Gov API 400 errors
@@ -949,11 +1017,14 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
         - Use find_law_article tool for specific article searches in large laws
     """
     if not law_id and not law_num:
-        return "Error: Either law_id or law_num must be specified"
+        raise ToolError("Either law_id or law_num must be specified")
     if response_format not in ["json", "xml"]:
-        return "Error: response_format must be 'json' or 'xml'"
+        raise ToolError("response_format must be 'json' or 'xml'")
 
     law_identifier = law_id if law_id else law_num
+    
+    if ctx:
+        await ctx.info(f"Getting law content for {law_identifier} in {response_format} format")
     params = {}
     if response_format == "xml":
         params["law_full_text_format"] = "xml"
@@ -998,7 +1069,9 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
                         if 'sections' in str(law_full_text).lower() or '節' in str(law_full_text):
                             summary["structure_note"] = summary.get("structure_note", "") + " 節による区分があります。"
 
-                    return json.dumps(summary, ensure_ascii=False, indent=2)
+                    if ctx:
+                        await ctx.info(f"Large law content truncated to summary ({len(response_str)} bytes)")
+                    return summary
 
                 # For smaller responses, add readable text
                 law_full_text = data.get('law_full_text', {})
@@ -1006,41 +1079,53 @@ async def get_law_content(law_id: str = "", law_num: str = "", response_format: 
                     # Extract readable text from XML
                     data['law_full_text_readable'] = extract_text_from_xml(law_full_text)
 
-                return json.dumps(data, ensure_ascii=False, indent=2)
+                if ctx:
+                    await ctx.info(f"Successfully retrieved law content ({len(response_str)} bytes)")
+                return data
             else:
                 # For XML format, check size and truncate if needed
                 if len(response.text) > 800000:
-                    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<law_content_summary>
-    <warning>法令全文が長すぎるため、概要のみ表示しています。</warning>
-    <recommendation>特定の条文を検索する場合は find_law_article ツールを使用してください。</recommendation>
-    <original_size_bytes>{len(response.text)}</original_size_bytes>
-    <truncated_content>
-        {response.text[:1000]}...
-    </truncated_content>
-</law_content_summary>"""
+                    if ctx:
+                        await ctx.info(f"Large XML content truncated ({len(response.text)} bytes)")
+                    return {
+                        "format": "xml",
+                        "warning": "法令全文が長すぎるため、概要のみ表示しています。",
+                        "recommendation": "特定の条文を検索する場合は find_law_article ツールを使用してください。",
+                        "original_size_bytes": len(response.text),
+                        "truncated_content": response.text[:1000] + "..."
+                    }
                 else:
-                    return response.text
+                    if ctx:
+                        await ctx.info(f"Successfully retrieved XML content ({len(response.text)} bytes)")
+                    return {
+                        "format": "xml",
+                        "content": response.text
+                    }
 
     except Exception as e:
         logger.error(f"Get law content error: {e}")
-        return f"Get Law Content Error: {str(e)}"
+        if ctx:
+            await ctx.error(f"Failed to get law content: {str(e)}")
+        raise ToolError(f"Failed to get law content: {str(e)}")
 
 @mcp.tool
-async def batch_find_articles(law_article_pairs: str) -> str:
+async def batch_find_articles(law_article_pairs: str, ctx: Context) -> dict:
     """
     Batch find multiple law articles efficiently
 
     Args:
         law_article_pairs: JSON string with law-article pairs, e.g. '[{"law":"民法","article":"192"},{"law":"憲法","article":"9"}]'
+        ctx: FastMCP context for logging
 
     Returns:
-        JSON with batch results and performance stats
+        Dict with batch results and performance stats
     """
     try:
         pairs = json.loads(law_article_pairs)
         if not isinstance(pairs, list):
-            return "Error: law_article_pairs must be a JSON array"
+            raise ToolError("law_article_pairs must be a JSON array")
+            
+        await ctx.info(f"Starting batch search for {len(pairs)} law-article pairs")
 
         results = []
         cache_hits = 0
@@ -1051,10 +1136,12 @@ async def batch_find_articles(law_article_pairs: str) -> str:
             if cache_manager.law_lookup_cache.size() == 0:
                 await cache_manager.prefetch_common_articles(client)
 
-            for pair in pairs:
+            for i, pair in enumerate(pairs):
                 if not isinstance(pair, dict) or "law" not in pair or "article" not in pair:
                     results.append({"error": "Invalid pair format"})
                     continue
+                    
+                await ctx.debug(f"Processing pair {i+1}/{len(pairs)}: {pair['law']} - {pair['article']}")
 
                 law_name = pair["law"]
                 article_number = pair["article"]
@@ -1067,19 +1154,66 @@ async def batch_find_articles(law_article_pairs: str) -> str:
                     results.append(cached_result)
                     cache_hits += 1
                 else:
-                    # Call find_law_article
-                    result = await find_law_article(law_name, article_number)
+                    # Perform law article search directly
                     try:
-                        parsed_result = json.loads(result)
-                        results.append(parsed_result)
-                        # Cache the result
-                        cache_manager.article_cache.put(cache_key, parsed_result)
-                        api_calls += 1
-                    except json.JSONDecodeError:
-                        results.append({"error": result})
+                        # Internal article search logic (similar to find_law_article)
+                        if not law_name or not law_name.strip():
+                            results.append({"error": "law_name is required"})
+                            continue
+                        if not article_number or not article_number.strip():
+                            results.append({"error": "article_number is required"})
+                            continue
+                            
+                        # Use smart_law_lookup to get law number
+                        law_num = await smart_law_lookup(law_name)
+                        if not law_num:
+                            results.append({"error": f"Law '{law_name}' not found"})
+                            continue
+                            
+                        # Get law content and search for article
+                        async with await get_http_client() as client:
+                            response = await client.get(f"/law_data/{law_num}", params={
+                                "law_full_text_format": "xml"
+                            })
+                            response.raise_for_status()
+                            
+                            data = json.loads(response.text)
+                            law_full_text = data.get('law_full_text', {})
+                            extracted_text = extract_text_from_xml(law_full_text)
+                            
+                            # Simple article search for batch processing
+                            patterns = generate_search_patterns(article_number)
+                            found_match = None
+                            
+                            for pattern in patterns[:3]:  # Use only first 3 patterns for speed
+                                article_pattern = re.escape(pattern)
+                                matches = re.findall(f"{article_pattern}.{{0,500}}", extracted_text, re.DOTALL)
+                                if matches:
+                                    found_match = matches[0].strip()
+                                    break
+                            
+                            # Prepare result
+                            law_info_data = data.get('law_info', {})
+                            result = {
+                                "law_info": law_info_data,
+                                "search_law_name": law_name,
+                                "search_article": article_number,
+                                "law_number": law_num,
+                                "found_article": found_match if found_match else None,
+                                "matches_found": 1 if found_match else 0
+                            }
+                            
+                            results.append(result)
+                            # Cache the result
+                            cache_manager.article_cache.put(cache_key, result)
+                            api_calls += 1
+                            
+                    except Exception as e:
+                        await ctx.error(f"Batch search item failed: {str(e)}")
+                        results.append({"error": str(e)})
                         api_calls += 1
 
-        return json.dumps({
+        batch_result = {
             "results": results,
             "performance_stats": {
                 "total_requests": len(pairs),
@@ -1087,51 +1221,70 @@ async def batch_find_articles(law_article_pairs: str) -> str:
                 "api_calls": api_calls,
                 "cache_hit_rate": f"{(cache_hits / len(pairs) * 100):.1f}%" if pairs else "0%"
             }
-        }, ensure_ascii=False, indent=2)
+        }
+        
+        await ctx.info(f"Batch search completed: {cache_hits} cache hits, {api_calls} API calls")
+        return batch_result
 
+    except ToolError:
+        raise
     except Exception as e:
         logger.error(f"Batch find articles error: {e}")
-        return f"Batch Find Articles Error: {str(e)}"
+        await ctx.error(f"Batch search failed: {str(e)}")
+        raise ToolError(f"Batch search failed: {str(e)}")
 
 @mcp.tool
-async def prefetch_common_laws() -> str:
+async def prefetch_common_laws(ctx: Context) -> dict:
     """
     Prefetch commonly accessed laws for better performance
 
+    Args:
+        ctx: FastMCP context for logging
+        
     Returns:
-        JSON with prefetch results and cache status
+        Dict with prefetch results and cache status
     """
     try:
+        await ctx.info("Starting prefetch of common laws...")
+        
         async with await get_http_client() as client:
             await cache_manager.prefetch_common_articles(client)
 
-            return json.dumps({
+            result = {
                 "status": "success",
                 "message": "Common laws prefetched successfully",
                 "cache_stats": {
                     "law_lookup_cache_size": cache_manager.law_lookup_cache.size(),
                     "law_content_cache_size": cache_manager.law_content_cache.size(),
                     "article_cache_size": cache_manager.article_cache.size(),
-                    "memory_usage_mb": cache_manager.memory_monitor.get_memory_usage_mb()
+                    "memory_usage_mb": cache_manager.memory_monitor.get_memory_usage_mb() if PERFORMANCE_MONITORING_AVAILABLE else "N/A"
                 }
-            }, ensure_ascii=False, indent=2)
+            }
+            
+            await ctx.info(f"Prefetch completed. Cache sizes: lookup={result['cache_stats']['law_lookup_cache_size']}, content={result['cache_stats']['law_content_cache_size']}, articles={result['cache_stats']['article_cache_size']}")
+            return result
 
     except Exception as e:
         logger.error(f"Prefetch common laws error: {e}")
-        return f"Prefetch Common Laws Error: {str(e)}"
+        await ctx.error(f"Prefetch failed: {str(e)}")
+        raise ToolError(f"Prefetch failed: {str(e)}")
 
 @mcp.tool
-async def get_cache_stats() -> str:
+async def get_cache_stats(ctx: Context) -> dict:
     """
     Get current cache statistics and performance metrics
 
+    Args:
+        ctx: FastMCP context for logging
+        
     Returns:
-        JSON with detailed cache statistics
+        Dict with detailed cache statistics
     """
     try:
+        await ctx.info("Getting cache statistics...")
         cache_manager.cleanup_if_needed()
 
-        return json.dumps({
+        result = {
             "cache_statistics": {
                 "law_lookup_cache": {
                     "size": cache_manager.law_lookup_cache.size(),
@@ -1150,9 +1303,10 @@ async def get_cache_stats() -> str:
                 }
             },
             "memory_monitoring": {
-                "current_usage_mb": cache_manager.memory_monitor.get_memory_usage_mb(),
+                "current_usage_mb": cache_manager.memory_monitor.get_memory_usage_mb() if PERFORMANCE_MONITORING_AVAILABLE else "N/A",
                 "max_memory_mb": cache_manager.memory_monitor.max_memory_mb,
-                "memory_limit_exceeded": cache_manager.memory_monitor.is_memory_limit_exceeded()
+                "memory_limit_exceeded": cache_manager.memory_monitor.is_memory_limit_exceeded(),
+                "monitoring_available": PERFORMANCE_MONITORING_AVAILABLE
             },
             "performance_features": [
                 "🚀 LRU caching with TTL support",
@@ -1161,24 +1315,38 @@ async def get_cache_stats() -> str:
                 "🔄 Automatic prefetching of common articles",
                 "📊 Real-time cache statistics"
             ]
-        }, ensure_ascii=False, indent=2)
+        }
+        
+        total_cache_items = sum([
+            result["cache_statistics"]["law_lookup_cache"]["size"],
+            result["cache_statistics"]["law_content_cache"]["size"],
+            result["cache_statistics"]["article_cache"]["size"]
+        ])
+        
+        await ctx.info(f"Cache statistics retrieved: {total_cache_items} total cached items")
+        return result
 
     except Exception as e:
         logger.error(f"Get cache stats error: {e}")
-        return f"Get Cache Stats Error: {str(e)}"
+        await ctx.error(f"Failed to get cache stats: {str(e)}")
+        raise ToolError(f"Failed to get cache stats: {str(e)}")
 
 @mcp.tool
-async def clear_cache(cache_type: str = "all") -> str:
+async def clear_cache(cache_type: str = "all", ctx: Context = None) -> dict:
     """
     Clear specified cache or all caches
 
     Args:
         cache_type: Cache type to clear ("all", "law_lookup", "law_content", "article")
+        ctx: FastMCP context for logging
 
     Returns:
-        JSON with clear operation results
+        Dict with clear operation results
     """
     try:
+        if ctx:
+            await ctx.info(f"Clearing cache: {cache_type}")
+            
         if cache_type == "all":
             cache_manager.law_lookup_cache.clear()
             cache_manager.law_content_cache.clear()
@@ -1194,12 +1362,9 @@ async def clear_cache(cache_type: str = "all") -> str:
             cache_manager.article_cache.clear()
             message = "Article cache cleared successfully"
         else:
-            return json.dumps({
-                "status": "error",
-                "message": f"Invalid cache_type: {cache_type}. Use 'all', 'law_lookup', 'law_content', or 'article'"
-            }, ensure_ascii=False, indent=2)
+            raise ToolError(f"Invalid cache_type: {cache_type}. Use 'all', 'law_lookup', 'law_content', or 'article'")
 
-        return json.dumps({
+        result = {
             "status": "success",
             "message": message,
             "cache_stats_after_clear": {
@@ -1207,11 +1372,19 @@ async def clear_cache(cache_type: str = "all") -> str:
                 "law_content_cache_size": cache_manager.law_content_cache.size(),
                 "article_cache_size": cache_manager.article_cache.size()
             }
-        }, ensure_ascii=False, indent=2)
+        }
+        
+        if ctx:
+            await ctx.info(f"Cache cleared successfully: {cache_type}")
+        return result
 
+    except ToolError:
+        raise
     except Exception as e:
         logger.error(f"Clear cache error: {e}")
-        return f"Clear Cache Error: {str(e)}"
+        if ctx:
+            await ctx.error(f"Failed to clear cache: {str(e)}")
+        raise ToolError(f"Failed to clear cache: {str(e)}")
 
 # Resources
 @mcp.resource("api://info")
