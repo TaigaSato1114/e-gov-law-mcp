@@ -482,7 +482,7 @@ async def find_law_article(law_name: str, article_number: str) -> str:
                 "matches_found": len(matches),
                 "articles": matches[:3] if matches else [],
                 "note": f"Searched for article '{article_number}' in '{actual_law_title}'{' (converted from: ' + original_law_input + ')' if name_conversion_applied else ''}",
-                "legal_analysis_instruction": "【重要】日本の法律の専門家として、この条文について以下のように回答してください：\n\n■ 0. 検索対象法律の確認（必須）\n検索結果の「actual_law_title」と「law_number」を確認し、正しい法律で検索されたことを明記してください。\n「name_conversion_applied」がtrueの場合は、略称から正式名称への変換が行われたことも説明してください。\n\n例：\n「民法（明治二十九年法律第八十九号）の第百九十二条について分析します。」\n「労基法として検索されましたが、正式名称は労働基準法です。」\n\n■ 1. 条文の正確な全文引用（必須）\n検索結果の「articles」に含まれる条文テキストを、一字一句正確に引用してください。条文番号、項、号まで含めて完全に表示してください。\n\n例：\n「第百九十二条　取引行為によって、平穏に、かつ、公然と動産の占有を始めた者は、善意であり、かつ、過失がないときは、即時にその動産について行使する権利を取得する。」\n\n■ 2. 法的分析（条文を引用しながら説明）\n上記で引用した条文の重要な文言を「」で再度引用しながら、以下の観点から詳細に分析してください：\n・条文の趣旨（立法目的・背景）\n・要件（適用要件・前提条件）\n・法的効果（権利の発生・変更・消滅、義務の発生・変更・消滅、その他の法的帰結）\n・実務上の注意点・関連判例\n・他の条文との関係性\n\n例：「取引行為によって」という要件は有償取引を前提とし、「善意であり、かつ、過失がない」という要件は主観的要件を示します。この要件を満たした場合、「即時にその動産について行使する権利を取得する」という法的効果が発生します。\n\n正式法律名の確認、条文の正確な引用、法的分析を組み合わせた専門的で実用的な回答をお願いします。"
+                "legal_analysis_instruction": "【重要】日本の法律の専門家として、この条文について以下のように回答してください：\n\n■ 0. 検索対象法律の確認（必須）\n検索結果の「actual_law_title」と「law_number」を確認し、正しい法律で検索されたことを明記してください。\n「name_conversion_applied」がtrueの場合は、略称から正式名称への変換が行われたことも説明してください。\n\n例：\n「民法（明治二十九年法律第八十九号）の第百九十二条について分析します。」\n「労基法として検索されましたが、正式名称は労働基準法です。」\n\n■ 1. 条文の正確な全文引用（必須）\n検索結果の「articles」に含まれる条文テキストを、一字一句正確に引用してください。条文番号、項、号まで含めて完全に表示してください。\n\n例：\n「第百九十二条　取引行為によって、平穏に、かつ、公然と動産の占有を始めた者は、善意であり、かつ、過失がないときは、即時にその動産について行使する権利を取得する。」\n\n■ 2. 法的分析（条文を引用しながら説明）\n上記で引用した条文の重要な文言を「」で再度引用しながら、以下の観点から詳細に分析してください：\n・条文の趣旨（立法目的・背景・保護法益）\n・適用要件（成立要件・前提条件）\n・法的効果（権利の発生・変更・消滅、義務の発生・変更・消滅、その他の法律関係の変動）\n・実務上の注意点・関連判例・学説\n・他の条文との関係性（準用・類推適用を含む）\n\n例：「取引行為によって」という要件は有償取引を前提とし、「善意であり、かつ、過失がない」という主観的要件を示します。これらの要件を満たした場合、「即時にその動産について行使する権利を取得する」という法的効果が発生し、元の権利者は所有権を失います。\n\n正式法律名の確認、条文の正確な引用、法的分析を組み合わせた専門的で実用的な回答をお願いします。"
             }
             
             if not matches:
@@ -499,7 +499,7 @@ async def find_law_article(law_name: str, article_number: str) -> str:
                         if 'の' in article_number:
                             result["suggestion"] = f"Article {article_num} exists, but the specified 'の' variation may not exist."
                         elif '項' in article_number or '号' in article_number:
-                            result["suggestion"] = f"Article {article_num} exists, but the specified paragraph/item may not exist."
+                            result["suggestion"] = f"Article {article_num} exists, but the specified paragraph (項) or subparagraph (号) may not exist."
                         else:
                             result["suggestion"] = f"Article found with different formatting. Try searching for just '{article_num}'."
                     else:
@@ -699,7 +699,7 @@ def get_api_info() -> dict:
         ],
         "basic_laws_supported": len(BASIC_LAWS),
         "optimization": "Reduced from 1000+ to <500 lines while adding functionality",
-        "legal_analysis_guidance": "日本の法律の専門家として、条文の趣旨と要件と効果に重点を置いて回答してください。単なる条文の引用ではなく、法的分析と実務的な解釈を含めてください。"
+        "legal_analysis_guidance": "日本の法律の専門家として、条文の趣旨・適用要件・法的効果に重点を置いて回答してください。単なる条文の引用ではなく、法的分析と実務的な解釈を含めてください。"
     }
 
 @mcp.resource("schema://law_types")
