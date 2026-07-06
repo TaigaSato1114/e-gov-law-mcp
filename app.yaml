@@ -1,4 +1,7 @@
 # Databricks Apps launch configuration.
 # Runs the existing FastMCP entry point over streamable-http so the server
 # can be reached at https://<app-url>/mcp from Playground / serving endpoints.
-command: ['uv', 'run', 'e-gov-law-mcp', '--transport', 'streamable-http']
+command:
+  - sh
+  - -c
+  - FASTMCP_JSON_RESPONSE=true FASTMCP_STATELESS_HTTP=true FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=false uv run e-gov-law-mcp --transport streamable-http
