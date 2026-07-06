@@ -35,7 +35,7 @@
 - **FastMCP準拠**: Context logging、ToolError例外、自動シリアライゼーション
 - **柔軟設定**: YAML設定ファイル、プロンプト外部化
 
-## 🛠️ 8つの高機能MCPツール
+## 🛠️ 11の高機能MCPツール
 
 | ツール | 機能 | 特徴 |
 |--------|------|------|
@@ -47,6 +47,9 @@
 | `prefetch_common_laws` | キャッシュ最適化 | 頻出法律の事前読み込み |
 | `get_cache_stats` | 監視 | リアルタイムパフォーマンス監視 |
 | `clear_cache` | メンテナンス | 粒度別キャッシュ管理 |
+| `get_enforcement_timeline` | 施行タイムライン | 改正履歴を施行日順に取得（施行状態・施行日を導出付与） |
+| `get_latest_enforcement_for_law` | 直近施行 | 今日時点で施行中の最新版を取得（未施行改正の有無も通知） |
+| `list_unenforced_amendments` | 未施行改正 | これから施行される改正の抽出（施行日未確定も明示） |
 
 ## 📊 対応法令
 
