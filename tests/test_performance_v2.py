@@ -44,8 +44,8 @@ class TestPerformanceV2:
                 total_time += response_time
                 
                 # 成功判定
-                if "Error:" not in result[0].text:
-                    data = json.loads(result[0].text)
+                if not result.is_error:
+                    data = json.loads(result.content[0].text)
                     if data.get("matches_found", 0) > 0:
                         success_count += 1
                 
@@ -137,7 +137,7 @@ class TestPerformanceV2:
             success_count = 0
             for _, result in results:
                 try:
-                    data = json.loads(result[0].text)
+                    data = json.loads(result.content[0].text)
                     if data.get("matches_found", 0) > 0:
                         success_count += 1
                 except (json.JSONDecodeError, KeyError):
@@ -163,7 +163,7 @@ class TestEfficiencyV2:
                     "article_number": "1"
                 })
                 # 基本的な動作確認
-                assert "Error:" not in result[0].text or "not found" in result[0].text
+                assert not result.is_error or "not found" in result.content[0].text
     
     @pytest.mark.asyncio
     async def test_api_call_efficiency(self):
@@ -180,8 +180,8 @@ class TestEfficiencyV2:
             })
             
             # 基本法の直接マッピングが機能していることを確認
-            if "Error:" not in result[0].text:
-                data = json.loads(result[0].text)
+            if not result.is_error:
+                data = json.loads(result.content[0].text)
                 # 正しい法令番号が使用されていることを確認
                 expected_law_num = BASIC_LAWS.get(law_name)
                 assert data.get("law_number") == expected_law_num
@@ -224,7 +224,7 @@ class TestScalabilityV2:
                 total_time += (end_time - start_time)
                 
                 try:
-                    data = json.loads(result[0].text)
+                    data = json.loads(result.content[0].text)
                     if data.get("matches_found", 0) > 0:
                         success_count += 1
                 except (json.JSONDecodeError, KeyError):

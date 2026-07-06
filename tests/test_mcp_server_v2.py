@@ -150,8 +150,8 @@ class TestRealLawArticles:
                 "article_number": "192"
             })
             
-            if "Error:" not in result[0].text:
-                data = json.loads(result[0].text)
+            if not result.is_error:
+                data = json.loads(result.content[0].text)
                 assert data.get("matches_found", 0) > 0
                 assert data.get("law_number") == "明治二十九年法律第八十九号"
                 
@@ -169,8 +169,8 @@ class TestRealLawArticles:
                 "article_number": "9"
             })
             
-            if "Error:" not in result[0].text:
-                data = json.loads(result[0].text)
+            if not result.is_error:
+                data = json.loads(result.content[0].text)
                 assert data.get("matches_found", 0) > 0
                 assert data.get("law_number") == "昭和二十一年憲法"
                 
@@ -188,8 +188,8 @@ class TestRealLawArticles:
                 "article_number": "325条の3"
             })
             
-            if "Error:" not in result[0].text:
-                data = json.loads(result[0].text)
+            if not result.is_error:
+                data = json.loads(result.content[0].text)
                 assert data.get("matches_found", 0) > 0
                 assert data.get("law_number") == "平成十七年法律第八十六号"
     
@@ -211,10 +211,10 @@ class TestRealLawArticles:
                 })
                 
                 # 基本法は直接マッピングされているので、エラーにならないはず
-                assert isinstance(result[0].text, str)  # FastMCP returns text content
+                assert isinstance(result.content[0].text, str)  # FastMCP returns text content
                 
                 try:
-                    data = json.loads(result[0].text)
+                    data = json.loads(result.content[0].text)
                     # 直接マッピングされた法令番号を使用しているか確認
                     expected_law_num = BASIC_LAWS.get(law_name)
                     if expected_law_num:
@@ -332,7 +332,7 @@ class TestErrorHandling:
             })
             
             try:
-                data = json.loads(result[0].text)
+                data = json.loads(result.content[0].text)
                 matches = data.get("matches_found", 0)
                 
                 # 条文が見つからない場合、提案が含まれているか確認
