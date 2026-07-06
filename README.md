@@ -131,8 +131,7 @@ uv add psutil
         "run",
         "--directory",
         "/path/to/e-gov-law-mcp",
-        "python",
-        "run_server.py"
+        "e-gov-law-mcp"
       ]
     }
   }
@@ -301,20 +300,6 @@ pip install PyYAML httpx fastmcp
 uv add psutil
 # または
 pip install psutil
-```
-
-**問題: FastMCPコマンドエラー**
-```bash
-# Claude Desktop設定でrun_server.pyを使用
-# 依存関係チェック機能付き
-"command": "uv",
-"args": [
-  "run",
-  "--directory",
-  "C:\\path\\to\\e-gov-law-mcp",
-  "python",
-  "run_server.py"
-]
 ```
 
 **その他のWindows問題**
