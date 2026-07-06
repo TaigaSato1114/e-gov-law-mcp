@@ -43,6 +43,11 @@ try:
 except ImportError:
     from prompt_loader import PromptLoader
 
+try:
+    from . import enforcement as enf
+except ImportError:
+    import enforcement as enf
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -145,6 +150,9 @@ class CacheManager:
         self.law_lookup_cache = LRUCache(max_size=200, ttl=7200)  # 2 hours
         self.law_content_cache = LRUCache(max_size=50, ttl=3600)  # 1 hour
         self.article_cache = LRUCache(max_size=500, ttl=1800)     # 30 minutes
+        # Enforcement-timeline caches use per-entry dynamic TTL (see enforcement.py).
+        self.revision_cache = enf.TTLCache(max_size=300)          # /law_revisions results
+        self.asof_content_cache = enf.TTLCache(max_size=100)      # as-of resolved bodies
         self.memory_monitor = MemoryMonitor()
         self.batch_pending = {}
         self.batch_lock = threading.Lock()
@@ -174,6 +182,8 @@ class CacheManager:
             self.law_lookup_cache.clear()
             self.law_content_cache.clear()
             self.article_cache.clear()
+            self.revision_cache.clear()
+            self.asof_content_cache.clear()
         else:
             self.law_lookup_cache.cleanup_expired()
             self.law_content_cache.cleanup_expired()
@@ -1385,6 +1395,308 @@ async def clear_cache(cache_type: str = "all", ctx: Context = None) -> dict:
         if ctx:
             await ctx.error(f"Failed to clear cache: {str(e)}")
         raise ToolError(f"Failed to clear cache: {str(e)}")
+
+# ---------------------------------------------------------------------------
+# Enforcement-timeline tools (施行タイムライン) - design: .plan/[設計]施行タイムライン機能.md
+# ---------------------------------------------------------------------------
+
+async def _resolve_law_id_or_num(law_name: str, law_id_or_num: str) -> str:
+    """Resolve a caller-supplied law reference into a law_id_or_num string.
+
+    ``law_id_or_num`` (an explicit id or law number) is used verbatim if given;
+    otherwise ``law_name`` is resolved via smart_law_lookup (alias -> formal
+    name -> law number). Raises ToolError when neither resolves.
+    """
+    if law_id_or_num and law_id_or_num.strip():
+        return law_id_or_num.strip()
+    if law_name and law_name.strip():
+        resolved = await smart_law_lookup(law_name)
+        if resolved:
+            return resolved
+        raise ToolError(f"Law '{law_name}' not found")
+    raise ToolError("Either law_name or law_id_or_num is required")
+
+
+async def _fetch_law_revisions(law_id_or_num: str, params: dict) -> tuple[dict, dict]:
+    """GET /law_revisions/{id} with dynamic-TTL caching.
+
+    Returns (data, cache_meta) where cache_meta = {source, age_seconds}.
+    """
+    cache_key = enf.revisions_cache_key(law_id_or_num, params)
+    cached = cache_manager.revision_cache.get(cache_key)
+    if cached is not None:
+        value, age = cached
+        return value, {"source": "cache", "age_seconds": age}
+
+    async with await get_http_client() as client:
+        response = await client.get(f"/law_revisions/{law_id_or_num}", params=params)
+        response.raise_for_status()
+        data = json.loads(response.text)
+
+    revisions = data.get("revisions", []) or []
+    ttl = enf.status_ttl_for_revisions(revisions)
+    cache_manager.revision_cache.put(cache_key, data, ttl)
+    return data, {"source": "network", "age_seconds": 0}
+
+
+def _law_identity(data: dict, fallback_id: str) -> dict:
+    """Extract law id/num/title from a /law_revisions response.
+
+    ``law_info`` in this endpoint carries id/num but not the title; the title
+    lives on each revision, so fall back to the first revision's law_title.
+    """
+    law_info = data.get("law_info", {}) or {}
+    revisions = data.get("revisions", []) or []
+    title = None
+    if revisions:
+        title = revisions[0].get("law_title")
+    return {
+        "law_id": law_info.get("law_id") or fallback_id,
+        "law_num": law_info.get("law_num"),
+        "law_title": title,
+    }
+
+
+@mcp.tool
+async def get_enforcement_timeline(
+    law_name: str = "",
+    law_id_or_num: str = "",
+    current_revision_status: str = "",
+    amendment_date_from: str = "",
+    amendment_date_to: str = "",
+    amendment_promulgate_date_from: str = "",
+    amendment_promulgate_date_to: str = "",
+    mission: str = "",
+    repeal_date_from: str = "",
+    repeal_date_to: str = "",
+    repeal_status: str = "",
+    include_repealed: bool = True,
+    order: str = "desc",
+    ctx: Context = None,
+) -> dict:
+    """Get a law's amendment history as an enforcement timeline (施行タイムライン).
+
+    Each entry carries the raw API fields plus a ``derived`` block
+    (enforcement_status / days_to_enforcement / finalized) computed against
+    today's date in JST. Entries with an unfixed enforcement date sort last.
+
+    Args:
+        law_name: Common/abbrev/formal law name (resolved via aliases).
+        law_id_or_num: Explicit law id or law number (takes precedence).
+        current_revision_status: Comma-separated statuses to filter
+            (CurrentEnforced,UnEnforced,PreviousEnforced,Repeal).
+        amendment_date_from/to: Enforcement-date range (指定値含む).
+        amendment_promulgate_date_from/to: Promulgation-date range.
+        mission: "New" or "Partial".
+        repeal_date_from/to, repeal_status: Repeal filters.
+        include_repealed: If False, drop Repeal entries from the timeline.
+        order: "desc" (default) or "asc" by enforcement date.
+        ctx: FastMCP context.
+
+    Returns:
+        Dict with law identity, timeline[], counts{}, asof and cache meta.
+    """
+    resolved = await _resolve_law_id_or_num(law_name, law_id_or_num)
+    if ctx:
+        await ctx.info(f"Fetching enforcement timeline for {resolved}")
+
+    params: dict = {}
+    if current_revision_status:
+        params["current_revision_status"] = current_revision_status
+    if amendment_date_from:
+        params["amendment_date_from"] = amendment_date_from
+    if amendment_date_to:
+        params["amendment_date_to"] = amendment_date_to
+    if amendment_promulgate_date_from:
+        params["amendment_promulgate_date_from"] = amendment_promulgate_date_from
+    if amendment_promulgate_date_to:
+        params["amendment_promulgate_date_to"] = amendment_promulgate_date_to
+    if mission:
+        params["mission"] = mission
+    if repeal_date_from:
+        params["repeal_date_from"] = repeal_date_from
+    if repeal_date_to:
+        params["repeal_date_to"] = repeal_date_to
+    if repeal_status:
+        params["repeal_status"] = repeal_status
+
+    try:
+        data, cache_meta = await _fetch_law_revisions(resolved, params)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return {
+                **_law_identity({}, resolved),
+                "timeline": [],
+                "counts": enf.count_statuses([]),
+                "note": "改正履歴なし（制定時のまま、または該当なし）",
+                "asof": enf.today_jst().isoformat(),
+                "cache": {"source": "network", "age_seconds": 0},
+            }
+        logger.error(f"Enforcement timeline error: {e}")
+        raise ToolError(f"Failed to fetch enforcement timeline: {str(e)}")
+    except Exception as e:
+        logger.error(f"Enforcement timeline error: {e}")
+        raise ToolError(f"Failed to fetch enforcement timeline: {str(e)}")
+
+    asof = enf.today_jst()
+    revisions = data.get("revisions", []) or []
+    entries = [enf.build_timeline_entry(r, asof) for r in revisions]
+    if not include_repealed:
+        entries = [
+            e for e in entries
+            if e.get("current_revision_status") != enf.STATUS_REPEAL
+        ]
+    entries = enf.sort_timeline(entries, order=order)
+
+    return {
+        **_law_identity(data, resolved),
+        "asof": asof.isoformat(),
+        "timeline": entries,
+        "counts": enf.count_statuses(entries),
+        "cache": cache_meta,
+    }
+
+
+@mcp.tool
+async def get_latest_enforcement_for_law(
+    law_name: str = "",
+    law_id_or_num: str = "",
+    all_on_same_day: bool = False,
+    ctx: Context = None,
+) -> dict:
+    """Return the latest currently-enforced revision (直近施行版) of a law.
+
+    Resolves "what is in force today" with the same state-independent date
+    filter used for as-of lookups: the newest revision whose
+    ``amendment_enforcement_date`` is on or before today (JST). This is robust
+    even when the law has no ``CurrentEnforced`` entry (some laws only carry
+    PreviousEnforced + UnEnforced), and never mis-selects a future UnEnforced
+    revision.
+
+    Args:
+        law_name: Common/abbrev/formal law name.
+        law_id_or_num: Explicit law id or law number (takes precedence).
+        all_on_same_day: If True, return all revisions sharing the same latest
+            enforcement date (default False = the single newest).
+        ctx: FastMCP context.
+
+    Returns:
+        Dict with latest_enforced (or list), has_pending_unenforced, asof,
+        cache meta, and (if repealed) no_effective_text.
+    """
+    resolved = await _resolve_law_id_or_num(law_name, law_id_or_num)
+    if ctx:
+        await ctx.info(f"Fetching latest enforcement for {resolved}")
+
+    try:
+        data, cache_meta = await _fetch_law_revisions(resolved, {})
+    except Exception as e:
+        logger.error(f"Latest enforcement error: {e}")
+        raise ToolError(f"Failed to fetch latest enforcement: {str(e)}")
+
+    asof = enf.today_jst()
+    revisions = data.get("revisions", []) or []
+    has_pending = any(
+        r.get("current_revision_status") == enf.STATUS_UNENFORCED for r in revisions
+    )
+
+    resolved_rev = enf.resolve_revision_asof(revisions, asof)
+
+    result = {
+        **_law_identity(data, resolved),
+        "asof": asof.isoformat(),
+        "has_pending_unenforced": has_pending,
+        "cache": cache_meta,
+    }
+
+    if resolved_rev is None:
+        result["latest_enforced"] = None
+        result["note"] = "施行済みの版が見つかりません（制定情報を確認してください）"
+        return result
+
+    if resolved_rev.get("no_effective_text"):
+        # Repealed and effective at asof.
+        result["no_effective_text"] = True
+        result["latest_enforced"] = enf.build_timeline_entry(
+            resolved_rev["last_enforced"], asof)
+        result["repeal"] = enf.build_timeline_entry(resolved_rev["repeal"], asof)
+        result["note"] = "この法令はasof時点で廃止されています"
+        return result
+
+    if all_on_same_day:
+        newest_date = resolved_rev.get("amendment_enforcement_date")
+        same_day = [
+            enf.build_timeline_entry(r, asof) for r in revisions
+            if r.get("amendment_enforcement_date") == newest_date
+        ]
+        result["latest_enforced"] = enf.sort_timeline(same_day, order="desc")
+    else:
+        result["latest_enforced"] = enf.build_timeline_entry(resolved_rev, asof)
+
+    return result
+
+
+@mcp.tool
+async def list_unenforced_amendments(
+    law_name: str = "",
+    law_id_or_num: str = "",
+    ctx: Context = None,
+) -> dict:
+    """List a law's unenforced (未施行) amendments, including uncertain dates.
+
+    Uses /law_revisions/{id}?current_revision_status=UnEnforced. Global
+    (cross-law) discovery is planned as a P1 follow-up; this P0 tool covers the
+    single-law case.
+
+    Args:
+        law_name: Common/abbrev/formal law name.
+        law_id_or_num: Explicit law id or law number (takes precedence).
+        ctx: FastMCP context.
+
+    Returns:
+        Dict with items[] (timeline schema), has_uncertain_dates, asof, cache meta.
+    """
+    resolved = await _resolve_law_id_or_num(law_name, law_id_or_num)
+    if ctx:
+        await ctx.info(f"Listing unenforced amendments for {resolved}")
+
+    params = {"current_revision_status": enf.STATUS_UNENFORCED}
+    try:
+        data, cache_meta = await _fetch_law_revisions(resolved, params)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return {
+                **_law_identity({}, resolved),
+                "scope": "law",
+                "items": [],
+                "has_uncertain_dates": False,
+                "note": "改正履歴なし（該当なし）",
+                "asof": enf.today_jst().isoformat(),
+                "cache": {"source": "network", "age_seconds": 0},
+            }
+        logger.error(f"List unenforced error: {e}")
+        raise ToolError(f"Failed to list unenforced amendments: {str(e)}")
+    except Exception as e:
+        logger.error(f"List unenforced error: {e}")
+        raise ToolError(f"Failed to list unenforced amendments: {str(e)}")
+
+    asof = enf.today_jst()
+    revisions = data.get("revisions", []) or []
+    entries = [enf.build_timeline_entry(r, asof) for r in revisions]
+    entries = enf.sort_timeline(entries, order="asc")  # soonest first
+    has_uncertain = any(
+        not e.get("amendment_enforcement_date") for e in entries
+    )
+
+    return {
+        **_law_identity(data, resolved),
+        "scope": "law",
+        "asof": asof.isoformat(),
+        "items": entries,
+        "has_uncertain_dates": has_uncertain,
+        "cache": cache_meta,
+    }
+
 
 # Resources
 @mcp.resource("api://info")
