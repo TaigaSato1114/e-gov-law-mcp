@@ -61,7 +61,7 @@ htmlcov/
 .ipynb_checkpoints
 
 # pyenv
-.python-version
+# .python-version  # Keep tracked for Databricks Apps deployment
 
 # Logs
 *.log
