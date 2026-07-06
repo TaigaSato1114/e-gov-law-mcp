@@ -29,7 +29,7 @@ from typing import Any, Optional
 import httpx
 import yaml
 from fastmcp import FastMCP, Context
-from fastmcp.exceptions import ToolError, ResourceError
+from fastmcp.exceptions import ToolError
 
 # Optional import for performance monitoring
 try:
@@ -1171,42 +1171,42 @@ async def batch_find_articles(law_article_pairs: str, ctx: Context) -> dict:
                             continue
                             
                         # Get law content and search for article
-                        async with await get_http_client() as client:
-                            response = await client.get(f"/law_data/{law_num}", params={
-                                "law_full_text_format": "xml"
-                            })
-                            response.raise_for_status()
-                            
-                            data = json.loads(response.text)
-                            law_full_text = data.get('law_full_text', {})
-                            extracted_text = extract_text_from_xml(law_full_text)
-                            
-                            # Simple article search for batch processing
-                            patterns = generate_search_patterns(article_number)
-                            found_match = None
-                            
-                            for pattern in patterns[:3]:  # Use only first 3 patterns for speed
-                                article_pattern = re.escape(pattern)
-                                matches = re.findall(f"{article_pattern}.{{0,500}}", extracted_text, re.DOTALL)
-                                if matches:
-                                    found_match = matches[0].strip()
-                                    break
-                            
-                            # Prepare result
-                            law_info_data = data.get('law_info', {})
-                            result = {
-                                "law_info": law_info_data,
-                                "search_law_name": law_name,
-                                "search_article": article_number,
-                                "law_number": law_num,
-                                "found_article": found_match if found_match else None,
-                                "matches_found": 1 if found_match else 0
-                            }
-                            
-                            results.append(result)
-                            # Cache the result
-                            cache_manager.article_cache.put(cache_key, result)
-                            api_calls += 1
+                        # Reuse the outer HTTP client instead of creating a new one
+                        response = await client.get(f"/law_data/{law_num}", params={
+                            "law_full_text_format": "xml"
+                        })
+                        response.raise_for_status()
+                        
+                        data = json.loads(response.text)
+                        law_full_text = data.get('law_full_text', {})
+                        extracted_text = extract_text_from_xml(law_full_text)
+                        
+                        # Simple article search for batch processing
+                        patterns = generate_search_patterns(article_number)
+                        found_match = None
+                        
+                        for pattern in patterns[:3]:  # Use only first 3 patterns for speed
+                            article_pattern = re.escape(pattern)
+                            matches = re.findall(f"{article_pattern}.{{0,500}}", extracted_text, re.DOTALL)
+                            if matches:
+                                found_match = matches[0].strip()
+                                break
+                        
+                        # Prepare result
+                        law_info_data = data.get('law_info', {})
+                        result = {
+                            "law_info": law_info_data,
+                            "search_law_name": law_name,
+                            "search_article": article_number,
+                            "law_number": law_num,
+                            "found_article": found_match if found_match else None,
+                            "matches_found": 1 if found_match else 0
+                        }
+                        
+                        results.append(result)
+                        # Cache the result
+                        cache_manager.article_cache.put(cache_key, result)
+                        api_calls += 1
                             
                     except Exception as e:
                         await ctx.error(f"Batch search item failed: {str(e)}")
