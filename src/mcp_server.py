@@ -1428,10 +1428,19 @@ def get_law_types() -> dict:
 def main():
     """Entry point for direct uvx installation"""
     # Parse command line arguments
+    # Databricks Apps injects DATABRICKS_APP_PORT and expects the process to
+    # bind 0.0.0.0, so those env vars become the defaults when present.
+    running_as_databricks_app = "DATABRICKS_APP_PORT" in os.environ
+    default_host = "0.0.0.0" if running_as_databricks_app else "127.0.0.1"
+
     parser = argparse.ArgumentParser(description="e-Gov Law MCP Server v2")
     parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--host", default=os.environ.get("MCP_HOST", default_host))
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("DATABRICKS_APP_PORT", os.environ.get("MCP_PORT", 8000)))
+    )
     args = parser.parse_args()
 
     if args.transport == "stdio":
