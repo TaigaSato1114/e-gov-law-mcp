@@ -1,0 +1,3 @@
+# Databricks Apps only needs `uv` itself; `uv run` resolves the rest of the
+# dependency graph from pyproject.toml / uv.lock at container start.
+uv
