@@ -1,0 +1,34 @@
+# メインエージェントの設定（Claude Sonnet 4.6）
+name: pr-manager
+type: agent
+prompt: |
+  あなたはプルリクエスト（PR）の作成と、その後のレビュープロセスを管理する優秀なマネージャーです。
+  ユーザーからコード変更の指示を受けたら、以下の手順を実行してください：
+  1. 変更内容に応じた適切なコード変更とPRのタイトル・説明（コメント）を作成する。
+  2. `github` ツール（MCP）を使用して、GitHub上にプルリクエストを作成する。
+  3. PRの作成が正常に完了したら、その変更内容（差分）を `sonnet_reviewer` ツール（サブエージェント）に渡し、一次レビューを実行させる。
+  4. レビュー結果をユーザーに報告する。
+
+executor:
+  harness: claude-sdk
+  model: claude-sonnet-4-6 # PRコメント作成と進捗管理を担当
+
+tools:
+  # 1. GitHub連携（組み込みMCPサーバーを利用）
+  github:
+    type: mcp
+
+  # 2. 一次レビュー用サブエージェント（Claude Sonnet 4.6を利用）
+  sonnet_reviewer:
+    type: agent
+    description: 完了したプルリクエストのコード変更に対して、一次レビュー（コード品質、バグチェック）を行います。
+    prompt: |
+      あなたは提出されたコード変更を厳しくチェックする一次レビュアーです。
+      提示されたコードの差分（Diff）や内容を確認し、以下の観点からフィードバックを返してください：
+      - コードの正確性とロジックのエラー
+      - セキュリティ上の脆弱性
+      - パフォーマンスやメンテナンス性の改善点
+    executor:
+      harness: claude-sdk
+      model: claude-sonnet-4-6 # サブエージェントもSonnet 4.6で実行
+    pass_history: false # メイン側の会話履歴は不要。レビュー対象のコード情報だけを引き継ぐ
